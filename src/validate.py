@@ -7,7 +7,16 @@ from sklearn.metrics import roc_auc_score
 from src.metrics import compute_pauc
 
 
-def validate(model, dataloader, criterion=None, device=None, use_metadata: bool = True):
+from torch.utils.data import DataLoader
+
+
+def validate(
+    model: torch.nn.Module,
+    dataloader: DataLoader,
+    criterion: torch.nn.Module | None = None,
+    device: torch.device | str | None = None,
+    use_metadata: bool = True,
+) -> dict[str, float]:
     """Validate the model and compute pAUC and ROC-AUC metrics.
 
     Supports both legacy ``(image, label)`` and Phase 3 ``(image, metadata, label)``
