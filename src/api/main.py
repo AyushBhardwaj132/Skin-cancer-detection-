@@ -94,10 +94,12 @@ async def global_exception_handler(request: Request, exc: Exception):
 from starlette.concurrency import run_in_threadpool
 
 
+eval_transform = build_transforms(train=False, image_size=config.image_size)
+
+
 def _run_prediction_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> float:
     image = Image.open(io.BytesIO(contents)).convert("RGB")
-    transform = build_transforms(train=False, image_size=config.image_size)
-    augmented = transform(image=np.array(image))
+    augmented = eval_transform(image=np.array(image))
     image_tensor = augmented["image"].unsqueeze(0).to(device)
 
     meta_df = pd.DataFrame([{
@@ -130,8 +132,7 @@ def _run_prediction_sync(contents: bytes, age_approx: float, sex: str, anatom_si
 
 def _run_explain_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> bytes:
     image = Image.open(io.BytesIO(contents)).convert("RGB")
-    transform = build_transforms(train=False, image_size=config.image_size)
-    augmented = transform(image=np.array(image))
+    augmented = eval_transform(image=np.array(image))
     image_tensor = augmented["image"].unsqueeze(0).to(device)
 
     meta_df = pd.DataFrame([{

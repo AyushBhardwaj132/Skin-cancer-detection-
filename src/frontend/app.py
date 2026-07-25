@@ -117,6 +117,11 @@ def load_cached_artifacts():
     return model, processor, config, device
 
 
+@st.cache_resource
+def get_eval_transform(image_size: int):
+    return build_transforms(train=False, image_size=image_size)
+
+
 def main():
     st.markdown("""
     <div class="brand-header">
@@ -132,12 +137,14 @@ def main():
         st.session_state.history = []
 
     st.sidebar.markdown("### 📋 Clinical Metadata")
-    age = st.sidebar.slider("Patient Age", min_value=1, max_value=100, value=45)
-    sex = st.sidebar.selectbox("Sex", options=["male", "female", "Unknown"])
-    anatom_site = st.sidebar.selectbox(
-        "Anatomical Location",
-        options=["torso", "lower extremity", "upper extremity", "head/neck", "palms/soles", "oral/genital", "Unknown"],
-    )
+    with st.sidebar.form("clinical_metadata_form"):
+        age = st.slider("Patient Age", min_value=1, max_value=100, value=45)
+        sex = st.selectbox("Sex", options=["male", "female", "Unknown"])
+        anatom_site = st.selectbox(
+            "Anatomical Location",
+            options=["torso", "lower extremity", "upper extremity", "head/neck", "palms/soles", "oral/genital", "Unknown"],
+        )
+        form_submitted = st.form_submit_button("⚡ Apply Patient Context", use_container_width=True)
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**Backbone**: `{config.backbone_name}`")
@@ -165,7 +172,7 @@ def main():
 
             if uploaded_file and model is not None:
                 with st.spinner("Analyzing visual feature maps & patient context..."):
-                    transform = build_transforms(train=False, image_size=config.image_size)
+                    transform = get_eval_transform(config.image_size)
                     augmented = transform(image=np.array(image))
                     image_tensor = augmented["image"].unsqueeze(0).to(device)
 
@@ -176,10 +183,17 @@ def main():
                         "anatom_site_general": anatom_site,
                     }])
 
-                    if processor is not None and processor.is_fitted:
+                    target_dim = getattr(model.metadata_mlp.net[0], "in_features", 47) if model else 47
+
+                    if processor is not None and getattr(processor, "is_fitted", False):
                         meta_vec = processor.transform(meta_df)
+                        if meta_vec.shape[1] > target_dim:
+                            meta_vec = meta_vec[:, :target_dim]
+                        elif meta_vec.shape[1] < target_dim:
+                            pad_width = target_dim - meta_vec.shape[1]
+                            meta_vec = np.pad(meta_vec, ((0, 0), (0, pad_width)), mode="constant")
                     else:
-                        meta_vec = np.zeros((1, 47), dtype=np.float32)
+                        meta_vec = np.zeros((1, target_dim), dtype=np.float32)
 
                     meta_tensor = torch.tensor(meta_vec, dtype=torch.float32).to(device)
 

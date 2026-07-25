@@ -337,21 +337,11 @@ def train(config: Config | None = None, fold_idx: int = 0):
                 },
                 checkpoint_path,
             )
-            # Also save to root checkpoint dir for backwards compatibility
-            save_checkpoint(
-                {
-                    "epoch": epoch,
-                    "fold": fold_idx,
-                    "model_name": config.backbone_name if config.use_metadata else config.model_name,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "best_val_pauc": best_pauc,
-                    "best_val_auc": best_auc,
-                    "metadata_dim": metadata_dim,
-                    "use_metadata": config.use_metadata,
-                },
-                config.checkpoint_dir / f"best_model_fold{fold_idx}.pt",
-            )
+            # Create a light symlink or alias copy only if path is distinct
+            root_ckpt_path = config.checkpoint_dir / f"best_model_fold{fold_idx}.pt"
+            if root_ckpt_path.resolve() != checkpoint_path.resolve():
+                import shutil
+                shutil.copy2(checkpoint_path, root_ckpt_path)
             print(f"  ★ New best pAUC={best_pauc:.4f} — saved to {checkpoint_path}")
 
         if early_stopping(current_score):
