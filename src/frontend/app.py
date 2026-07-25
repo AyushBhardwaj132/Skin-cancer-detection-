@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import inspect
 import io
 import sys
 from pathlib import Path
@@ -17,6 +16,20 @@ from src.data.metadata import MetadataProcessor
 from src.data.transforms import build_transforms
 from src.utils import get_device, load_checkpoint
 from src.utils.xai import GradCAM, overlay_heatmap_on_image
+
+
+def _get_width_kwarg(func) -> dict[str, bool]:
+    """Dynamically resolves use_container_width vs use_column_width keyword arguments across Streamlit versions."""
+    try:
+        params = inspect.signature(func).parameters
+        if "use_container_width" in params:
+            return {"use_container_width": True}
+        elif "use_column_width" in params:
+            return {"use_column_width": True}
+    except Exception:
+        pass
+    return {}
+
 
 @st.cache_resource
 def load_cached_artifacts():
@@ -63,6 +76,10 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    image_width_kwarg = _get_width_kwarg(st.image)
+    dataframe_width_kwarg = _get_width_kwarg(st.dataframe)
+    button_width_kwarg = _get_width_kwarg(st.form_submit_button)
 
     # Custom Design Tokens & CSS
     st.markdown("""
@@ -152,7 +169,7 @@ def main():
             "Anatomical Location",
             options=["torso", "lower extremity", "upper extremity", "head/neck", "palms/soles", "oral/genital", "Unknown"],
         )
-        form_submitted = st.form_submit_button("⚡ Apply Patient Context", use_container_width=True)
+        form_submitted = st.form_submit_button("⚡ Apply Patient Context", **button_width_kwarg)
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### ⚙️ Engine Diagnostics")
@@ -172,7 +189,7 @@ def main():
 
             if uploaded_file:
                 image = Image.open(uploaded_file).convert("RGB")
-                st.image(image, caption=f"Uploaded Image ({image.size[0]}x{image.size[1]} px)", use_container_width=True)
+                st.image(image, caption=f"Uploaded Image ({image.size[0]}x{image.size[1]} px)", **image_width_kwarg)
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col2:
@@ -244,9 +261,9 @@ def main():
                         
                         cam_col1, cam_col2 = st.columns(2)
                         with cam_col1:
-                            st.image(image, caption="Original Dermoscopic Scan", use_container_width=True)
+                            st.image(image, caption="Original Dermoscopic Scan", **image_width_kwarg)
                         with cam_col2:
-                            st.image(overlay, caption="Grad-CAM Activation Map", use_container_width=True)
+                            st.image(overlay, caption="Grad-CAM Activation Map", **image_width_kwarg)
 
             elif model is None:
                 st.warning("Model checkpoint not found. Please verify trained model existence.")
@@ -258,7 +275,7 @@ def main():
         st.subheader("📋 Session Prediction History")
         if st.session_state.history:
             hist_df = pd.DataFrame(st.session_state.history)
-            st.dataframe(hist_df, use_container_width=True)
+            st.dataframe(hist_df, **dataframe_width_kwarg)
         else:
             st.info("No predictions recorded in this session yet.")
 
