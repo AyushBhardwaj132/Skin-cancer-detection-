@@ -51,34 +51,44 @@ st.markdown("""
         border-radius: 12px;
         padding: 1.5rem;
         margin-bottom: 1rem;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
     
-    .metric-value { font-size: 2rem; font-weight: 700; color: #F8FAFC; }
-    .metric-label { font-size: 0.875rem; color: #94A3B8; text-transform: uppercase; tracking: 0.05em; }
+    .metric-value { font-size: 2.5rem; font-weight: 800; color: #F8FAFC; letter-spacing: -0.03em; }
+    .metric-label { font-size: 0.875rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
     
     .badge-high {
         background: linear-gradient(135deg, #7F1D1D 0%, #991B1B 100%);
         border: 1px solid #EF4444;
         color: #FEE2E2;
-        padding: 0.75rem 1.25rem;
-        border-radius: 8px;
-        font-weight: 600;
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        font-weight: 700;
+        font-size: 1.05rem;
+        text-align: center;
+        margin-top: 1rem;
     }
     .badge-mod {
         background: linear-gradient(135deg, #78350F 0%, #92400E 100%);
         border: 1px solid #F59E0B;
         color: #FEF3C7;
-        padding: 0.75rem 1.25rem;
-        border-radius: 8px;
-        font-weight: 600;
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        font-weight: 700;
+        font-size: 1.05rem;
+        text-align: center;
+        margin-top: 1rem;
     }
     .badge-low {
         background: linear-gradient(135deg, #064E3B 0%, #065F46 100%);
         border: 1px solid #10B981;
         color: #D1FAE5;
-        padding: 0.75rem 1.25rem;
-        border-radius: 8px;
-        font-weight: 600;
+        padding: 1rem 1.25rem;
+        border-radius: 10px;
+        font-weight: 700;
+        font-size: 1.05rem;
+        text-align: center;
+        margin-top: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -136,7 +146,7 @@ def main():
     if "history" not in st.session_state:
         st.session_state.history = []
 
-    st.sidebar.markdown("### 📋 Clinical Metadata")
+    st.sidebar.markdown("### 📋 Clinical Patient Metadata")
     with st.sidebar.form("clinical_metadata_form"):
         age = st.slider("Patient Age", min_value=1, max_value=100, value=45)
         sex = st.selectbox("Sex", options=["male", "female", "Unknown"])
@@ -147,9 +157,10 @@ def main():
         form_submitted = st.form_submit_button("⚡ Apply Patient Context", use_container_width=True)
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**Backbone**: `{config.backbone_name}`")
-    st.sidebar.markdown(f"**Resolution**: `{config.image_size}x{config.image_size}`")
-    st.sidebar.markdown(f"**Device**: `{device}`")
+    st.sidebar.markdown("### ⚙️ Engine Diagnostics")
+    st.sidebar.markdown(f"**Backbone Architecture**: `{config.backbone_name}`")
+    st.sidebar.markdown(f"**Input Resolution**: `{config.image_size}x{config.image_size}`")
+    st.sidebar.markdown(f"**Compute Hardware**: `{device}`")
 
     tabs = st.tabs(["🔍 Single Lesion Diagnosis", "📊 Prediction History", "⚡ System Diagnostics"])
 
@@ -159,11 +170,11 @@ def main():
         with col1:
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.subheader("📷 Upload Lesion Image")
-            uploaded_file = st.file_uploader("Choose a dermoscopic image...", type=["jpg", "jpeg", "png", "webp"])
+            uploaded_file = st.file_uploader("Choose a dermoscopic image (JPEG, PNG, WEBP)...", type=["jpg", "jpeg", "png", "webp"])
 
             if uploaded_file:
                 image = Image.open(uploaded_file).convert("RGB")
-                st.image(image, caption="Uploaded Image", use_container_width=True)
+                st.image(image, caption=f"Uploaded Image ({image.size[0]}x{image.size[1]} px)", use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col2:
@@ -206,29 +217,38 @@ def main():
                     st.progress(prob)
 
                     if prob >= 0.70:
+                        risk_tag = "HIGH RISK"
                         st.markdown('<div class="badge-high">⚠️ HIGH RISK MALIGNANCY — Urgent Biopsy Indicated</div>', unsafe_allow_html=True)
                     elif prob >= 0.35:
+                        risk_tag = "MODERATE RISK"
                         st.markdown('<div class="badge-mod">⚡ MODERATE RISK — Sequential Dermoscopy Recommended</div>', unsafe_allow_html=True)
                     else:
+                        risk_tag = "LOW RISK"
                         st.markdown('<div class="badge-low">✅ LOW RISK — Typical Benign Characteristics</div>', unsafe_allow_html=True)
 
                     # Save to prediction history
                     st.session_state.history.append({
                         "filename": uploaded_file.name,
-                        "prob": prob,
+                        "probability": f"{prob * 100:.1f}%",
+                        "risk_level": risk_tag,
                         "age": age,
                         "sex": sex,
                         "site": anatom_site,
                     })
 
-                    # Grad-CAM Toggle
+                    # Side-by-side Grad-CAM Comparison
                     st.markdown("---")
-                    show_cam = st.toggle("Show Grad-CAM Heatmap", value=True)
+                    show_cam = st.toggle("Show Grad-CAM Heatmap Comparison", value=True)
                     if show_cam:
                         gradcam = GradCAM(model)
                         heatmap = gradcam.generate(image_tensor, meta_tensor)
                         overlay = overlay_heatmap_on_image(image, heatmap)
-                        st.image(overlay, caption="Grad-CAM Explainability Map", use_container_width=True)
+                        
+                        cam_col1, cam_col2 = st.columns(2)
+                        with cam_col1:
+                            st.image(image, caption="Original Dermoscopic Scan", use_container_width=True)
+                        with cam_col2:
+                            st.image(overlay, caption="Grad-CAM Activation Map", use_container_width=True)
 
             elif model is None:
                 st.warning("Model checkpoint not found. Please verify trained model existence.")
@@ -257,3 +277,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
