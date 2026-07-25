@@ -1,0 +1,73 @@
+# =============================================================================
+# ISIC 2024 — Development Mode Configuration
+# =============================================================================
+# This configuration is used by train_dev.py for CPU-friendly training
+# on a balanced subset of the ISIC 2024 dataset.
+#
+# The architecture (FusionModel + metadata) is IDENTICAL to production.
+# Only computation parameters are reduced for feasibility on CPU.
+# =============================================================================
+
+mode: development
+
+# --- Model Architecture (identical to production) ---
+backbone_name: tf_efficientnetv2_s
+image_size: 224
+
+# --- Metadata Fusion (identical to production) ---
+use_metadata: true
+use_patient_features: true
+use_ugly_duckling: true
+metadata_mlp_hidden: 256
+metadata_mlp_output: 128
+
+# --- Training Hyperparameters ---
+num_epochs: 5
+batch_size: 8          # CPU-friendly; auto-adjusted at runtime based on RAM
+learning_rate: 0.0001  # 1e-4
+weight_decay: 0.0001   # 1e-4
+
+# --- Optimizer & Scheduler ---
+optimizer: AdamW
+scheduler: CosineAnnealingLR
+scheduler_eta_min: 0.000001  # 1e-6
+
+# --- Loss ---
+loss_type: focal
+focal_alpha: 0.50
+focal_gamma: 2.0
+
+# --- Regularization ---
+early_stopping_patience: 3
+max_grad_norm: 1.0
+
+# --- Augmentation ---
+use_advanced_augs: false    # Simplified for faster CPU training
+use_mixup: false            # Disabled for CPU speed
+use_cutmix: false
+
+# --- EMA ---
+use_ema: false              # Disabled for CPU speed (doubles memory + time)
+ema_decay: 0.999
+
+# --- CPU Optimization ---
+use_fp16: false             # Disabled (no CUDA)
+num_workers: 0              # 0 for Windows CPU (avoids multiprocessing overhead)
+pin_memory: false
+
+# --- Reproducibility ---
+seed: 42
+
+# --- Data Paths ---
+train_csv: data/dev_train.csv
+val_csv: data/dev_validation.csv
+image_dir: data/train-image
+
+# --- Checkpoint Paths ---
+checkpoint_dir: outputs/checkpoints/dev
+evaluation_dir: outputs/evaluation/dev
+
+# --- Column Names ---
+target_column: target
+image_id_column: isic_id
+patient_column: patient_id

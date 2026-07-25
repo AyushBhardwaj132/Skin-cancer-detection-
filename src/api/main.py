@@ -36,11 +36,20 @@ eval_transform = build_transforms(train=False, image_size=config.image_size)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, processor, metadata_dim
-    ckpt_path = config.best_checkpoint_path
-    if not ckpt_path.exists():
-        found = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
-        if found:
-            ckpt_path = found[0]
+    # Prefer development model for demo, fall back to production
+    dev_ckpt = Path("outputs/checkpoints/dev/best_model.pt")
+    dev_proc = Path("outputs/checkpoints/dev/dev_metadata_processor.joblib")
+
+    if dev_ckpt.exists():
+        ckpt_path = dev_ckpt
+        logger.info("Using DEVELOPMENT model checkpoint for API.")
+    else:
+        ckpt_path = config.best_checkpoint_path
+        if not ckpt_path.exists():
+            found = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
+            found = [f for f in found if "dev" not in str(f).lower()]
+            if found:
+                ckpt_path = found[0]
 
     if ckpt_path.exists():
         logger.info(f"Loading FastAPI model checkpoint: {ckpt_path}")
@@ -56,9 +65,13 @@ async def lifespan(app: FastAPI):
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
 
-    if config.metadata_processor_path.exists():
+    # Load appropriate metadata processor
+    if dev_ckpt.exists() and dev_proc.exists():
+        processor = MetadataProcessor.load(str(dev_proc))
+        logger.info("Loaded DEVELOPMENT metadata processor.")
+    elif config.metadata_processor_path.exists():
         processor = MetadataProcessor.load(str(config.metadata_processor_path))
-        logger.info("Loaded tabular metadata processor.")
+        logger.info("Loaded production metadata processor.")
 
     yield
 

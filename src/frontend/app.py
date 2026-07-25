@@ -1,6 +1,7 @@
 import inspect
 import io
 import sys
+import datetime
 from pathlib import Path
 
 import cv2
@@ -18,6 +19,102 @@ from src.utils import get_device, load_checkpoint
 from src.utils.xai import GradCAM, overlay_heatmap_on_image
 
 
+# =============================================================================
+# Model Discovery & Loading
+# =============================================================================
+
+DEV_CHECKPOINT_DIR = Path("outputs/checkpoints/dev")
+DEV_BEST_MODEL = DEV_CHECKPOINT_DIR / "best_model.pt"
+DEV_PROCESSOR_PATH = DEV_CHECKPOINT_DIR / "dev_metadata_processor.joblib"
+
+
+def discover_available_models() -> list[dict]:
+    """Discover available model checkpoints (development + production)."""
+    models = []
+
+    # --- Development model ---
+    if DEV_BEST_MODEL.exists():
+        try:
+            ckpt = torch.load(DEV_BEST_MODEL, map_location="cpu", weights_only=False)
+            models.append({
+                "name": "Development Model",
+                "path": str(DEV_BEST_MODEL),
+                "processor_path": str(DEV_PROCESSOR_PATH) if DEV_PROCESSOR_PATH.exists() else None,
+                "backbone": ckpt.get("model_name", "unknown"),
+                "epoch": ckpt.get("epoch", "?"),
+                "roc_auc": ckpt.get("val_roc_auc", float("nan")),
+                "pauc": ckpt.get("val_pauc", float("nan")),
+                "metadata_dim": ckpt.get("metadata_dim", 47),
+                "timestamp": ckpt.get("training_timestamp", "unknown"),
+                "mode": ckpt.get("mode", "development"),
+            })
+        except Exception:
+            pass
+
+    # --- Production model(s) ---
+    config = Config()
+    prod_checkpoints = []
+    if config.best_checkpoint_path.exists():
+        prod_checkpoints.append(config.best_checkpoint_path)
+    # Also search subdirectories
+    if config.checkpoint_dir.exists():
+        for ckpt_file in sorted(config.checkpoint_dir.glob("**/*.pt")):
+            # Skip dev checkpoints
+            if "dev" in str(ckpt_file).lower():
+                continue
+            if ckpt_file not in prod_checkpoints:
+                prod_checkpoints.append(ckpt_file)
+
+    for ckpt_path in prod_checkpoints[:3]:  # Limit to first 3 production checkpoints
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            models.append({
+                "name": f"Production Model ({ckpt_path.parent.name}/{ckpt_path.name})",
+                "path": str(ckpt_path),
+                "processor_path": str(config.metadata_processor_path) if config.metadata_processor_path.exists() else None,
+                "backbone": ckpt.get("model_name", config.backbone_name),
+                "epoch": ckpt.get("epoch", "?"),
+                "roc_auc": ckpt.get("best_val_auc", ckpt.get("val_roc_auc", float("nan"))),
+                "pauc": ckpt.get("best_val_pauc", ckpt.get("val_pauc", float("nan"))),
+                "metadata_dim": ckpt.get("metadata_dim", 47),
+                "timestamp": ckpt.get("training_timestamp", "unknown"),
+                "mode": ckpt.get("mode", "production"),
+            })
+        except Exception:
+            pass
+
+    return models
+
+
+def load_model_for_selection(model_info: dict, device: torch.device) -> tuple:
+    """Load a specific model checkpoint and its metadata processor."""
+    ckpt_path = Path(model_info["path"])
+    checkpoint = load_checkpoint(ckpt_path, map_location=device)
+    metadata_dim = checkpoint.get("metadata_dim", 47)
+    model_name = checkpoint.get("model_name", "tf_efficientnetv2_m")
+
+    model = FusionModel(
+        backbone_name=model_name,
+        metadata_dim=metadata_dim,
+        pretrained=False,
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()
+
+    processor = None
+    proc_path = model_info.get("processor_path")
+    if proc_path and Path(proc_path).exists():
+        processor = MetadataProcessor.load(proc_path)
+
+    # Fall back to production processor if dev processor missing
+    if processor is None:
+        config = Config()
+        if config.metadata_processor_path.exists():
+            processor = MetadataProcessor.load(str(config.metadata_processor_path))
+
+    return model, processor
+
+
 def _get_width_kwarg(func) -> dict[str, bool]:
     """Dynamically resolves use_container_width vs use_column_width keyword arguments across Streamlit versions."""
     try:
@@ -32,15 +129,25 @@ def _get_width_kwarg(func) -> dict[str, bool]:
 
 
 @st.cache_resource
-def load_cached_artifacts():
+def load_cached_artifacts(_model_path: str = ""):
+    """Load model artifacts. The _model_path arg is used as a cache key for model switching."""
     config = Config()
     device = get_device()
-    ckpt_path = config.best_checkpoint_path
 
-    if not ckpt_path.exists():
-        found = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
-        if found:
-            ckpt_path = found[0]
+    # If a specific model path is provided (from selector), use it
+    if _model_path and Path(_model_path).exists():
+        ckpt_path = Path(_model_path)
+    else:
+        # Default: prefer dev model, fall back to production
+        if DEV_BEST_MODEL.exists():
+            ckpt_path = DEV_BEST_MODEL
+        else:
+            ckpt_path = config.best_checkpoint_path
+            if not ckpt_path.exists():
+                found = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
+                found = [f for f in found if "dev" not in str(f).lower()]
+                if found:
+                    ckpt_path = found[0]
 
     if not ckpt_path.exists():
         return None, None, config, device
@@ -57,8 +164,12 @@ def load_cached_artifacts():
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
+    # Load appropriate metadata processor
     processor = None
-    if config.metadata_processor_path.exists():
+    # For dev models, prefer dev processor
+    if "dev" in str(ckpt_path).lower() and DEV_PROCESSOR_PATH.exists():
+        processor = MetadataProcessor.load(str(DEV_PROCESSOR_PATH))
+    elif config.metadata_processor_path.exists():
         processor = MetadataProcessor.load(str(config.metadata_processor_path))
 
     return model, processor, config, device
@@ -155,12 +266,40 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    model, processor, config, device = load_cached_artifacts()
+    # --- Model Selector ---
+    available_models = discover_available_models()
+    model_names = [m["name"] for m in available_models] if available_models else ["No models found"]
+
+    st.sidebar.markdown("### 🧠 Model Selection")
+    if available_models:
+        selected_model_name = st.sidebar.selectbox(
+            "Active Model",
+            options=model_names,
+            index=0,  # Default to first (Development if available)
+        )
+        selected_model_info = available_models[model_names.index(selected_model_name)]
+        selected_path = selected_model_info["path"]
+
+        # Display model metadata
+        st.sidebar.markdown(f"""<div style="background:#1E293B; border:1px solid #334155; border-radius:8px; padding:0.75rem; margin-bottom:0.75rem; font-size:0.85rem;">
+        <b>Checkpoint:</b> <code>{Path(selected_path).name}</code><br>
+        <b>Backbone:</b> <code>{selected_model_info['backbone']}</code><br>
+        <b>Epoch:</b> {selected_model_info['epoch']}<br>
+        <b>Training Date:</b> {selected_model_info['timestamp']}<br>
+        <b>Val ROC-AUC:</b> {selected_model_info['roc_auc']:.4f}<br>
+        <b>Val pAUC:</b> {selected_model_info['pauc']:.4f}
+        </div>""", unsafe_allow_html=True)
+    else:
+        selected_path = ""
+        st.sidebar.warning("No model checkpoints found.")
+
+    model, processor, config, device = load_cached_artifacts(_model_path=selected_path)
 
     # History session state
     if "history" not in st.session_state:
         st.session_state.history = []
 
+    st.sidebar.markdown("---")
     st.sidebar.markdown("### 📋 Clinical Patient Metadata")
     with st.sidebar.form("clinical_metadata_form"):
         age = st.slider("Patient Age", min_value=1, max_value=100, value=45)
