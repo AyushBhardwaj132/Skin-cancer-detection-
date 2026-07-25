@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import gc
 import io
 from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends, status
 from fastapi.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 import torch
 
 from src.config import Config
@@ -27,6 +29,8 @@ device = get_device()
 model: FusionModel | None = None
 processor: MetadataProcessor | None = None
 metadata_dim: int = 47
+
+eval_transform = build_transforms(train=False, image_size=config.image_size)
 
 
 @asynccontextmanager
@@ -55,19 +59,32 @@ async def lifespan(app: FastAPI):
     if config.metadata_processor_path.exists():
         processor = MetadataProcessor.load(str(config.metadata_processor_path))
         logger.info("Loaded tabular metadata processor.")
+
     yield
+
+    logger.info("Shutting down API service & cleaning resources...")
+    model = None
+    processor = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 app = FastAPI(
-    title="ISIC Skin Cancer Detection API",
-    description="Enterprise REST API for predicting skin lesion malignancy probability & generating Grad-CAM explainability heatmaps.",
+    title="ISIC Medical AI — Skin Cancer Detection REST API",
+    description="Production-grade REST API service predicting skin lesion malignancy probabilities & generating Grad-CAM heatmaps.",
     version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    openapi_tags=[
+        {"name": "Health", "description": "System diagnostics and API service readiness checks."},
+        {"name": "Inference", "description": "Skin lesion image upload and clinical risk prediction endpoints."},
+        {"name": "Explainable AI (XAI)", "description": "Grad-CAM visual feature map heatmap generation."},
+    ],
     lifespan=lifespan,
 )
 
-# Step 6 & 7 Security: Explicit allowed origins (no wildcard "*")
+# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -82,6 +99,35 @@ app.add_middleware(
 )
 
 
+# Security Headers Middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+# Dependency Injection for Model Check
+def get_loaded_model() -> FusionModel:
+    if model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Model checkpoint is not loaded. Service initializing or unavailable.",
+        )
+    return model
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled error processing request {request.url}: {exc}", exc_info=True)
@@ -91,13 +137,22 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-from starlette.concurrency import run_in_threadpool
+def _validate_image_bytes(contents: bytes) -> None:
+    """Validates raw file header magic bytes to prevent spoofed content-types."""
+    if len(contents) < 4:
+        raise ValueError("File stream too short to be a valid image.")
 
+    # Magic byte signatures: JPEG (\xFF\xD8\xFF), PNG (\x89PNG), WEBP (RIFF...WEBP)
+    is_jpeg = contents.startswith(b"\xff\xd8\xff")
+    is_png = contents.startswith(b"\x89PNG")
+    is_webp = contents.startswith(b"RIFF") and b"WEBP" in contents[:16]
 
-eval_transform = build_transforms(train=False, image_size=config.image_size)
+    if not (is_jpeg or is_png or is_webp):
+        raise ValueError("Uploaded binary does not match JPEG, PNG, or WEBP magic-byte header signatures.")
 
 
 def _run_prediction_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> float:
+    _validate_image_bytes(contents)
     image = Image.open(io.BytesIO(contents)).convert("RGB")
     augmented = eval_transform(image=np.array(image))
     image_tensor = augmented["image"].unsqueeze(0).to(device)
@@ -131,6 +186,7 @@ def _run_prediction_sync(contents: bytes, age_approx: float, sex: str, anatom_si
 
 
 def _run_explain_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> bytes:
+    _validate_image_bytes(contents)
     image = Image.open(io.BytesIO(contents)).convert("RGB")
     augmented = eval_transform(image=np.array(image))
     image_tensor = augmented["image"].unsqueeze(0).to(device)
@@ -200,10 +256,8 @@ async def predict_lesion(
     age_approx: float = Form(45.0),
     sex: str = Form("male"),
     anatom_site_general: str = Form("torso"),
+    active_model: FusionModel = Depends(get_loaded_model),
 ):
-    if model is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Model checkpoint is not loaded.")
-
     if file.content_type not in config.allowed_mime_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -249,14 +303,13 @@ async def explain_lesion(
     age_approx: float = Form(45.0),
     sex: str = Form("male"),
     anatom_site_general: str = Form("torso"),
+    active_model: FusionModel = Depends(get_loaded_model),
 ):
-    if model is None:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Model is not loaded.")
-
     try:
         contents = await file.read()
         png_bytes = await run_in_threadpool(_run_explain_sync, contents, age_approx, sex, anatom_site_general)
         return Response(content=png_bytes, media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to generate Grad-CAM: {e}")
+
 

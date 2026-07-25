@@ -33,10 +33,14 @@ def compute_ugly_duckling_score(df: pd.DataFrame) -> pd.DataFrame:
     df_copy = df.copy()
 
     if "clin_size_long_diam_mm" in df_copy.columns and "patient_clin_size_long_diam_mm_mean" in df_copy.columns:
-        std = df_copy.get("patient_clin_size_long_diam_mm_std", 1.0).fillna(1.0).replace(0, 1.0)
-        df_copy["ugly_duckling_score"] = (
-            df_copy["clin_size_long_diam_mm"] - df_copy["patient_clin_size_long_diam_mm_mean"]
-        ) / std
+        std_col = df_copy.get("patient_clin_size_long_diam_mm_std")
+        if std_col is not None:
+            std = std_col.fillna(1.0).replace(0, 1.0)
+        else:
+            std = 1.0
+
+        diff = df_copy["clin_size_long_diam_mm"] - df_copy["patient_clin_size_long_diam_mm_mean"]
+        df_copy["ugly_duckling_score"] = (diff / std).fillna(0.0)
     else:
         df_copy["ugly_duckling_score"] = 0.0
 
