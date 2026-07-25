@@ -18,82 +18,6 @@ from src.data.transforms import build_transforms
 from src.utils import get_device, load_checkpoint
 from src.utils.xai import GradCAM, overlay_heatmap_on_image
 
-# Page Setup
-st.set_page_config(
-    page_title="ISIC Medical AI | Skin Cancer Diagnostic Assistant",
-    page_icon="🔬",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# Custom Design Tokens & CSS
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    
-    .stApp { background-color: #0F172A; color: #F8FAFC; }
-    
-    .brand-header {
-        background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
-        border: 1px solid #334155;
-        border-radius: 16px;
-        padding: 2rem;
-        margin-bottom: 2rem;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-    }
-    .brand-title { font-size: 2.2rem; font-weight: 700; color: #38BDF8; letter-spacing: -0.02em; }
-    .brand-subtitle { font-size: 1.05rem; color: #94A3B8; margin-top: 0.5rem; }
-    
-    .card {
-        background-color: #1E293B;
-        border: 1px solid #334155;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    }
-    
-    .metric-value { font-size: 2.5rem; font-weight: 800; color: #F8FAFC; letter-spacing: -0.03em; }
-    .metric-label { font-size: 0.875rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
-    
-    .badge-high {
-        background: linear-gradient(135deg, #7F1D1D 0%, #991B1B 100%);
-        border: 1px solid #EF4444;
-        color: #FEE2E2;
-        padding: 1rem 1.25rem;
-        border-radius: 10px;
-        font-weight: 700;
-        font-size: 1.05rem;
-        text-align: center;
-        margin-top: 1rem;
-    }
-    .badge-mod {
-        background: linear-gradient(135deg, #78350F 0%, #92400E 100%);
-        border: 1px solid #F59E0B;
-        color: #FEF3C7;
-        padding: 1rem 1.25rem;
-        border-radius: 10px;
-        font-weight: 700;
-        font-size: 1.05rem;
-        text-align: center;
-        margin-top: 1rem;
-    }
-    .badge-low {
-        background: linear-gradient(135deg, #064E3B 0%, #065F46 100%);
-        border: 1px solid #10B981;
-        color: #D1FAE5;
-        padding: 1rem 1.25rem;
-        border-radius: 10px;
-        font-weight: 700;
-        font-size: 1.05rem;
-        text-align: center;
-        margin-top: 1rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
 @st.cache_resource
 def load_cached_artifacts():
     config = Config()
@@ -133,6 +57,80 @@ def get_eval_transform(image_size: int):
 
 
 def main():
+    st.set_page_config(
+        page_title="ISIC Medical AI | Skin Cancer Diagnostic Assistant",
+        page_icon="🔬",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    # Custom Design Tokens & CSS
+    st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+        
+        .stApp { background-color: #0F172A; color: #F8FAFC; }
+        
+        .brand-header {
+            background: linear-gradient(135deg, #1E293B 0%, #0F172A 100%);
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+        .brand-title { font-size: 2.2rem; font-weight: 700; color: #38BDF8; letter-spacing: -0.02em; }
+        .brand-subtitle { font-size: 1.05rem; color: #94A3B8; margin-top: 0.5rem; }
+        
+        .card {
+            background-color: #1E293B;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+        
+        .metric-value { font-size: 2.5rem; font-weight: 800; color: #F8FAFC; letter-spacing: -0.03em; }
+        .metric-label { font-size: 0.875rem; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+        
+        .badge-high {
+            background: linear-gradient(135deg, #7F1D1D 0%, #991B1B 100%);
+            border: 1px solid #EF4444;
+            color: #FEE2E2;
+            padding: 1rem 1.25rem;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            text-align: center;
+            margin-top: 1rem;
+        }
+        .badge-mod {
+            background: linear-gradient(135deg, #78350F 0%, #92400E 100%);
+            border: 1px solid #F59E0B;
+            color: #FEF3C7;
+            padding: 1rem 1.25rem;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            text-align: center;
+            margin-top: 1rem;
+        }
+        .badge-low {
+            background: linear-gradient(135deg, #064E3B 0%, #065F46 100%);
+            border: 1px solid #10B981;
+            color: #D1FAE5;
+            padding: 1rem 1.25rem;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 1.05rem;
+            text-align: center;
+            margin-top: 1rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.markdown("""
     <div class="brand-header">
         <div class="brand-title">🔬 ISIC Medical AI — Skin Cancer Diagnostic Assistant</div>
