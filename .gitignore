@@ -1,0 +1,31 @@
+# Python / Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Data & Datasets
+data/*.csv
+data/*.hdf5
+data/train-image/
+data/test-image/
+
+# Model Checkpoints & Large Artifacts
+outputs/checkpoints/
+outputs/metadata_processor.joblib
+outputs/predictions/
+outputs/figures/
+*.pt
+*.pth
+*.onnx
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

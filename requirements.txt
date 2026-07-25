@@ -1,0 +1,16 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+torch
+torchvision
+albumentations
+opencv-python
+h5py
+jupyter
+timm
+tqdm
+Pillow
+joblib
+seaborn
+umap-learn

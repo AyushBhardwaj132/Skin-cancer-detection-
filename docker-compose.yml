@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  api:
+    build: .
+    container_name: isic_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+  web:
+    build: .
+    container_name: isic_streamlit_app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    command: streamlit run app/streamlit_app.py --server.port=8501 --server.address=0.0.0.0
+    depends_on:
+      - api
