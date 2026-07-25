@@ -34,7 +34,7 @@ def verify_all_20_steps():
         "src/metrics.py",
         "src/train.py",
         "src/validate.py",
-        "src/inference.py",
+        "src/inference/predictor.py",
         "src/ensemble.py",
         "src/pseudo_labeling.py",
         "src/evaluate.py",
