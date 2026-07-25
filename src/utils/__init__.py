@@ -74,10 +74,18 @@ def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") 
     return torch.load(Path(path), map_location=map_location)
 
 
+def seed_worker(worker_id: int) -> None:
+    """Ensures deterministic random seeding across multi-worker DataLoaders."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 __all__ = [
     "get_logger",
     "set_seed",
     "seed_everything",
+    "seed_worker",
     "get_device",
     "ensure_dir",
     "resolve_image_path",
@@ -85,3 +93,4 @@ __all__ = [
     "load_checkpoint",
     "IMAGE_EXTENSIONS",
 ]
+

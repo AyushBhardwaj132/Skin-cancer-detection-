@@ -21,7 +21,7 @@ from src.model import build_model
 from src.patient_features import enrich_metadata
 from src.split import get_fold_dataframes
 from src.transforms import build_transforms, mixup_data, cutmix_data
-from src.utils import ensure_dir, get_device, save_checkpoint, seed_everything
+from src.utils import ensure_dir, get_device, save_checkpoint, seed_everything, seed_worker
 from src.validate import validate as run_validation
 
 
@@ -104,13 +104,18 @@ def _build_loaders_fold(
         [sample_weights[int(t)] for t in train_targets_valid],
         dtype=torch.float32,
     )
-    sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
+    
+    g = torch.Generator()
+    g.manual_seed(config.seed)
+    sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True, generator=g)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         sampler=sampler,
         num_workers=config.num_workers,
+        worker_init_fn=seed_worker,
+        generator=g,
         pin_memory=torch.cuda.is_available(),
     )
     val_loader = DataLoader(
@@ -118,9 +123,12 @@ def _build_loaders_fold(
         batch_size=config.batch_size,
         shuffle=False,
         num_workers=config.num_workers,
+        worker_init_fn=seed_worker,
+        generator=g,
         pin_memory=torch.cuda.is_available(),
     )
     return train_loader, val_loader, metadata_dim
+
 
 
 def _train_one_epoch(

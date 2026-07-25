@@ -91,6 +91,80 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+from starlette.concurrency import run_in_threadpool
+
+
+def _run_prediction_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> float:
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    transform = build_transforms(train=False, image_size=config.image_size)
+    augmented = transform(image=np.array(image))
+    image_tensor = augmented["image"].unsqueeze(0).to(device)
+
+    meta_df = pd.DataFrame([{
+        "isic_id": "API_SAMPLE",
+        "age_approx": age_approx,
+        "sex": sex,
+        "anatom_site_general": anatom_site_general,
+    }])
+
+    target_dim = getattr(model.metadata_mlp.net[0], "in_features", metadata_dim) if model else metadata_dim
+
+    if processor is not None and getattr(processor, "is_fitted", False):
+        meta_vec = processor.transform(meta_df)
+        if meta_vec.shape[1] > target_dim:
+            meta_vec = meta_vec[:, :target_dim]
+        elif meta_vec.shape[1] < target_dim:
+            pad_width = target_dim - meta_vec.shape[1]
+            meta_vec = np.pad(meta_vec, ((0, 0), (0, pad_width)), mode="constant")
+    else:
+        meta_vec = np.zeros((1, target_dim), dtype=np.float32)
+
+    meta_tensor = torch.tensor(meta_vec, dtype=torch.float32).to(device)
+
+    with torch.no_grad():
+        logits = model(image_tensor, meta_tensor)
+        prob = float(torch.sigmoid(logits).item())
+
+    return prob
+
+
+def _run_explain_sync(contents: bytes, age_approx: float, sex: str, anatom_site_general: str) -> bytes:
+    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    transform = build_transforms(train=False, image_size=config.image_size)
+    augmented = transform(image=np.array(image))
+    image_tensor = augmented["image"].unsqueeze(0).to(device)
+
+    meta_df = pd.DataFrame([{
+        "isic_id": "API_SAMPLE",
+        "age_approx": age_approx,
+        "sex": sex,
+        "anatom_site_general": anatom_site_general,
+    }])
+
+    target_dim = getattr(model.metadata_mlp.net[0], "in_features", metadata_dim) if model else metadata_dim
+
+    if processor is not None and getattr(processor, "is_fitted", False):
+        meta_vec = processor.transform(meta_df)
+        if meta_vec.shape[1] > target_dim:
+            meta_vec = meta_vec[:, :target_dim]
+        elif meta_vec.shape[1] < target_dim:
+            pad_width = target_dim - meta_vec.shape[1]
+            meta_vec = np.pad(meta_vec, ((0, 0), (0, pad_width)), mode="constant")
+    else:
+        meta_vec = np.zeros((1, target_dim), dtype=np.float32)
+
+    meta_tensor = torch.tensor(meta_vec, dtype=torch.float32).to(device)
+
+    gradcam = GradCAM(model)
+    heatmap = gradcam.generate(image_tensor, meta_tensor)
+    overlay_pil = overlay_heatmap_on_image(image, heatmap)
+
+    buf = io.BytesIO()
+    overlay_pil.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
+
+
 @app.get("/", tags=["Health"])
 def root():
     return {
@@ -143,31 +217,9 @@ async def predict_lesion(
                 detail=f"File size exceeds maximum limit of {config.max_upload_size_mb} MB.",
             )
 
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        prob = await run_in_threadpool(_run_prediction_sync, contents, age_approx, sex, anatom_site_general)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid or unreadable image file: {e}")
-
-    transform = build_transforms(train=False, image_size=config.image_size)
-    augmented = transform(image=np.array(image))
-    image_tensor = augmented["image"].unsqueeze(0).to(device)
-
-    meta_df = pd.DataFrame([{
-        "isic_id": "API_SAMPLE",
-        "age_approx": age_approx,
-        "sex": sex,
-        "anatom_site_general": anatom_site_general,
-    }])
-
-    if processor is not None and getattr(processor, "is_fitted", False):
-        meta_vec = processor.transform(meta_df)
-    else:
-        meta_vec = np.zeros((1, metadata_dim), dtype=np.float32)
-
-    meta_tensor = torch.tensor(meta_vec, dtype=torch.float32).to(device)
-
-    with torch.no_grad():
-        logits = model(image_tensor, meta_tensor)
-        prob = float(torch.sigmoid(logits).item())
 
     if prob >= 0.70:
         risk_level = "HIGH RISK"
@@ -202,36 +254,8 @@ async def explain_lesion(
 
     try:
         contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image file: {e}")
-
-    transform = build_transforms(train=False, image_size=config.image_size)
-    image_np = np.array(image)
-    augmented = transform(image=image_np)
-    image_tensor = augmented["image"].unsqueeze(0).to(device)
-
-    meta_df = pd.DataFrame([{
-        "isic_id": "API_SAMPLE",
-        "age_approx": age_approx,
-        "sex": sex,
-        "anatom_site_general": anatom_site_general,
-    }])
-    if processor is not None and getattr(processor, "is_fitted", False):
-        meta_vec = processor.transform(meta_df)
-    else:
-        meta_vec = np.zeros((1, metadata_dim), dtype=np.float32)
-
-    meta_tensor = torch.tensor(meta_vec, dtype=torch.float32).to(device)
-
-    try:
-        gradcam = GradCAM(model)
-        heatmap = gradcam.generate(image_tensor, meta_tensor)
-        overlay_pil = overlay_heatmap_on_image(image, heatmap)
-
-        buf = io.BytesIO()
-        overlay_pil.save(buf, format="PNG")
-        buf.seek(0)
-        return Response(content=buf.getvalue(), media_type="image/png")
+        png_bytes = await run_in_threadpool(_run_explain_sync, contents, age_approx, sex, anatom_site_general)
+        return Response(content=png_bytes, media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to generate Grad-CAM: {e}")
+
