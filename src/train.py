@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import argparse
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -422,8 +423,8 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
                 "best_val_auc": best_auc,
                 "metadata_dim": metadata_dim,
                 "use_metadata": config.use_metadata,
-                "config": {k: str(v) if isinstance(v, type(config.data_dir)) else v
-                           for k, v in config.__dict__.items()},
+                "config": {k: str(v) if isinstance(v, Path) else v
+                           for k, v in asdict(config).items()},
             }
             save_checkpoint(checkpoint_payload, checkpoint_path)
 
