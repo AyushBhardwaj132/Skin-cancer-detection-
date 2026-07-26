@@ -38,6 +38,35 @@ def setup_kaggle_hardware(config: Config) -> None:
         config.num_workers = 0
 
 
+def get_config(args: argparse.Namespace) -> Config:
+    """Load configuration from YAML file and apply CLI overrides."""
+    config_path = args.config if args.config else "configs/kaggle_config.yaml"
+    config = Config.from_yaml(config_path)
+
+    print("After YAML load:")
+    print(f"  backbone_name = {config.backbone_name}")
+    print(f"  image_size    = {config.image_size}")
+    print(f"  focal_alpha   = {config.focal_alpha}\n")
+
+    # Apply CLI parameter overrides
+    if args.epochs is not None:
+        config.num_epochs = args.epochs
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.lr is not None:
+        config.learning_rate = args.lr
+    if args.backbone is not None:
+        config.backbone_name = args.backbone
+        config.model_name = args.backbone
+
+    print("After CLI overrides:")
+    print(f"  backbone_name = {config.backbone_name}")
+    print(f"  image_size    = {config.image_size}")
+    print(f"  focal_alpha   = {config.focal_alpha}\n")
+
+    return config
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="ISIC 2024 Challenge — Kaggle GPU Competition Training Entry Point"
@@ -53,20 +82,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    config = Config()
+    config = get_config(args)
 
-    # Apply CLI parameter overrides
-    if args.epochs is not None:
-        config.num_epochs = args.epochs
-    if args.batch_size is not None:
-        config.batch_size = args.batch_size
-    if args.lr is not None:
-        config.learning_rate = args.lr
-    if args.backbone is not None:
-        config.backbone_name = args.backbone
-        config.model_name = args.backbone
+    print("Immediately before train():")
+    print(f"  backbone_name = {config.backbone_name}")
+    print(f"  image_size    = {config.image_size}")
+    print(f"  focal_alpha   = {config.focal_alpha}\n")
 
     print("=" * 80)
+
     print("ISIC 2024 — KAGGLE GPU COMPETITION TRAINING PIPELINE")
     print("=" * 80)
     print(f"  Project:                {config.project_name}")

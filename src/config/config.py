@@ -172,3 +172,29 @@ class Config:
         path = self.checkpoint_dir / clean_name
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @classmethod
+    def from_yaml(cls, yaml_path: str | Path) -> Config:
+        """Load Config dataclass from a YAML file."""
+        import yaml
+        from dataclasses import fields
+
+        yaml_path = Path(yaml_path)
+        config = cls()
+        if not yaml_path.exists():
+            print(f"[WARN] Config file not found: {yaml_path}, using defaults")
+            return config
+
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        valid_fields = {f.name for f in fields(cls)}
+
+        for key, value in data.items():
+            if key in valid_fields:
+                setattr(config, key, value)
+            if key == "backbone_name":
+                config.model_name = value
+
+        return config
+
