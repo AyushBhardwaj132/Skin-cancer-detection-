@@ -6,15 +6,26 @@ import os
 
 
 def _detect_data_dir() -> Path:
-    if os.getenv("DATA_DIR"):
+    """Robustly auto-detects local vs Kaggle competition dataset input directory."""
+    if os.getenv("DATA_DIR") and Path(os.getenv("DATA_DIR")).exists():
         return Path(os.getenv("DATA_DIR"))
+
     kaggle_paths = [
+        Path("/kaggle/input/competitions/isic-2024-challenge"),
         Path("/kaggle/input/isic-2024-challenge"),
         Path("/kaggle/input/isic-2024"),
     ]
     for kp in kaggle_paths:
-        if kp.exists():
+        if kp.exists() and (kp / "train-metadata.csv").exists():
             return kp
+
+    # Dynamic search under /kaggle/input/ for any directory containing train-metadata.csv
+    kaggle_root = Path("/kaggle/input")
+    if kaggle_root.exists():
+        for sub_dir in kaggle_root.glob("**/*"):
+            if sub_dir.is_dir() and (sub_dir / "train-metadata.csv").exists():
+                return sub_dir
+
     return Path("data")
 
 
@@ -115,6 +126,14 @@ class Config:
     @property
     def test_image_dir(self) -> Path:
         return self.data_dir / self.test_image_dir_name
+
+    @property
+    def train_image_hdf5_path(self) -> Path:
+        return self.data_dir / "train-image.hdf5"
+
+    @property
+    def test_image_hdf5_path(self) -> Path:
+        return self.data_dir / "test-image.hdf5"
 
     @property
     def checkpoint_dir(self) -> Path:
