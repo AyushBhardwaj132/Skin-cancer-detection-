@@ -7,6 +7,8 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
+import io
+import os
 import cv2
 from src.utils import resolve_image_path
 
@@ -43,7 +45,7 @@ def crop_lesion_centered(img_np: np.ndarray, margin: float = 0.20) -> np.ndarray
 
 
 class ISICDataset(Dataset):
-    """Production PyTorch dataset for skin lesion images and metadata."""
+    """Production PyTorch dataset supporting extracted image folders and Kaggle HDF5 datasets."""
     def __init__(
         self,
         df: pd.DataFrame,
@@ -63,6 +65,10 @@ class ISICDataset(Dataset):
         self.image_id_col = image_id_col
         self.use_lesion_crop = use_lesion_crop
 
+        # --- HDF5 Auto Detection ---
+        self.hdf5_path = self._detect_hdf5_path(self.image_dir)
+        self._h5_file = None
+
         if metadata_tensor is not None:
             if isinstance(metadata_tensor, np.ndarray):
                 self.metadata_tensor = torch.tensor(metadata_tensor, dtype=torch.float32)
@@ -71,20 +77,65 @@ class ISICDataset(Dataset):
         else:
             self.metadata_tensor = None
 
+    @staticmethod
+    def _detect_hdf5_path(image_dir: Path) -> Path | None:
+        """Detects whether an HDF5 dataset exists locally or in Kaggle directories."""
+        candidates = [
+            image_dir if str(image_dir).endswith((".hdf5", ".h5")) and image_dir.is_file() else None,
+            image_dir / "train-image.hdf5",
+            image_dir / "test-image.hdf5",
+            image_dir.parent / f"{image_dir.name}.hdf5",
+            image_dir.with_suffix(".hdf5") if image_dir.suffix != ".hdf5" else None,
+            Path("/kaggle/input/isic-2024-challenge/train-image.hdf5"),
+            Path("/kaggle/input/isic-2024-challenge/test-image.hdf5"),
+            Path("data/train-image.hdf5"),
+            Path("data/test-image.hdf5"),
+        ]
+        for c in candidates:
+            if c is not None and c.exists() and c.is_file():
+                return c
+        return None
+
+    def _get_h5_file(self):
+        """Lazy worker-safe h5py File handle retrieval."""
+        if self._h5_file is None and self.hdf5_path is not None:
+            try:
+                import h5py
+                self._h5_file = h5py.File(str(self.hdf5_path), "r")
+            except Exception:
+                self._h5_file = None
+        return self._h5_file
+
     def __len__(self) -> int:
         return len(self.df)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
         row = self.df.iloc[idx]
         image_id = str(row[self.image_id_col])
+        image_np = None
 
-        try:
-            image_path = resolve_image_path(self.image_dir, image_id)
-            image = Image.open(image_path).convert("RGB")
-            image_np = np.array(image)
-        except Exception:
-            # Fallback synthetic array if image is corrupted or missing in test mode
-            image_np = np.zeros((384, 384, 3), dtype=np.uint8)
+        # 1. Try reading from HDF5 dataset if available
+        if self.hdf5_path is not None:
+            try:
+                h5_file = self._get_h5_file()
+                if h5_file is not None and image_id in h5_file:
+                    raw_data = h5_file[image_id][()]
+                    if isinstance(raw_data, np.ndarray):
+                        raw_data = raw_data.tobytes()
+                    image = Image.open(io.BytesIO(raw_data)).convert("RGB")
+                    image_np = np.array(image)
+            except Exception:
+                image_np = None
+
+        # 2. Try reading from extracted image directory if HDF5 fails or not present
+        if image_np is None:
+            try:
+                image_path = resolve_image_path(self.image_dir, image_id)
+                image = Image.open(image_path).convert("RGB")
+                image_np = np.array(image)
+            except Exception:
+                # 3. Fallback synthetic array if image is corrupted or missing in test mode
+                image_np = np.zeros((384, 384, 3), dtype=np.uint8)
 
         if self.use_lesion_crop:
             image_np = crop_lesion_centered(image_np)
