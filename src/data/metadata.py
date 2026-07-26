@@ -28,17 +28,26 @@ class MetadataProcessor:
         self.encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
         self.num_cols = list(METADATA_NUMERIC_COLS)
         self.cat_cols = list(METADATA_CATEGORICAL_COLS)
+        self.fitted_num_cols = []
+        self.fitted_cat_cols = []
         self.is_fitted = False
+
+    def get_feature_dim(self) -> int:
+        num_dim = len(self.scaler.mean_) if hasattr(self.scaler, "mean_") else len(self.num_cols)
+        cat_dim = sum(len(c) for c in self.encoder.categories_) if hasattr(self.encoder, "categories_") else 10
+        return num_dim + cat_dim
 
     def fit(self, df: pd.DataFrame) -> MetadataProcessor:
         df_copy = df.copy()
         existing_num = [c for c in self.num_cols if c in df_copy.columns]
         if existing_num:
+            self.fitted_num_cols = existing_num
             num_data = df_copy[existing_num].fillna(df_copy[existing_num].median()).fillna(0.0)
             self.scaler.fit(num_data)
 
         existing_cat = [c for c in self.cat_cols if c in df_copy.columns]
         if existing_cat:
+            self.fitted_cat_cols = existing_cat
             cat_data = df_copy[existing_cat].fillna("Unknown").astype(str)
             self.encoder.fit(cat_data)
 
@@ -46,20 +55,24 @@ class MetadataProcessor:
         return self
 
     def transform(self, df: pd.DataFrame) -> np.ndarray:
-        if not getattr(self, "is_fitted", True):
-            raise RuntimeError("MetadataProcessor must be fitted before transform().")
-
         df_copy = df.copy()
-        existing_num = [c for c in self.num_cols if c in df_copy.columns]
-        if existing_num:
-            num_data = df_copy[existing_num].fillna(df_copy[existing_num].median()).fillna(0.0)
+
+        fitted_num = getattr(self, "fitted_num_cols", [c for c in self.num_cols if c in df_copy.columns])
+        if fitted_num and hasattr(self.scaler, "mean_"):
+            for c in fitted_num:
+                if c not in df_copy.columns:
+                    df_copy[c] = 0.0
+            num_data = df_copy[fitted_num].fillna(0.0)
             num_features = self.scaler.transform(num_data)
         else:
             num_features = np.zeros((len(df), len(self.num_cols)), dtype=np.float32)
 
-        existing_cat = [c for c in self.cat_cols if c in df_copy.columns]
-        if existing_cat:
-            cat_data = df_copy[existing_cat].fillna("Unknown").astype(str)
+        fitted_cat = getattr(self, "fitted_cat_cols", [c for c in self.cat_cols if c in df_copy.columns])
+        if fitted_cat and hasattr(self.encoder, "categories_"):
+            for c in fitted_cat:
+                if c not in df_copy.columns:
+                    df_copy[c] = "Unknown"
+            cat_data = df_copy[fitted_cat].fillna("Unknown").astype(str)
             cat_features = self.encoder.transform(cat_data)
         else:
             cat_features = np.zeros((len(df), 10), dtype=np.float32)
@@ -97,6 +110,10 @@ class MetadataProcessor:
             obj.scaler = StandardScaler()
         if not hasattr(obj, "encoder"):
             obj.encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-        if not hasattr(obj, "is_fitted"):
-            obj.is_fitted = False
+        if not hasattr(obj, "fitted_num_cols"):
+            obj.fitted_num_cols = [c for c in obj.num_cols if hasattr(obj.scaler, "mean_")]
+        if not hasattr(obj, "fitted_cat_cols"):
+            obj.fitted_cat_cols = [c for c in obj.cat_cols if hasattr(obj.encoder, "categories_")]
+        if hasattr(obj.scaler, "mean_") or hasattr(obj.encoder, "categories_"):
+            obj.is_fitted = True
         return obj

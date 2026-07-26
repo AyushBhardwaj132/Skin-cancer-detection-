@@ -210,26 +210,24 @@ def execute_pipeline():
     from src.config import Config
     config = Config()
 
-    # Step 1: Run training if no model checkpoint exists
+    # Step 1: Check existing model checkpoints
     checkpoints = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
     if not checkpoints:
-        print("[Execution Step 1] No existing model checkpoint found. Running baseline training for 1 epoch...")
-        from src.train import train
-        config.num_epochs = 1
-        train(config, fold_idx=0)
-        checkpoints = list(config.checkpoint_dir.glob("**/*.pt")) + list(config.checkpoint_dir.glob("*.pt"))
+        print("[Execution Step 1] No existing model checkpoint found. Please run 'python train.py' to train competition models.")
+        best_ckpt = None
     else:
-        print(f"[Execution Step 1] Found existing trained model checkpoint: {checkpoints[0]}")
+        best_ckpt = checkpoints[0]
+        print(f"[Execution Step 1] Found existing trained model checkpoint: {best_ckpt}")
 
-    # Step 2: Load best saved checkpoint
-    best_ckpt = checkpoints[0]
-    print(f"[Execution Step 2] Loading best checkpoint: {best_ckpt}")
-
-    # Step 3 & 4: Run inference on test dataset & generate submission.csv
-    print("[Execution Step 3 & 4] Running inference & generating submission.csv...")
-    from src.inference import predict
-    sub_df = predict(config, checkpoint_path=best_ckpt, use_tta=True, method="rank")
-    print(f"  [OK] Saved submission to {config.submission_path} ({len(sub_df)} predictions)")
+    # Step 2: Run inference if checkpoint exists
+    if best_ckpt and best_ckpt.exists():
+        print(f"[Execution Step 2] Loading best checkpoint: {best_ckpt}")
+        print("[Execution Step 3 & 4] Running inference & generating submission.csv...")
+        from src.inference import predict
+        sub_df = predict(config, checkpoint_path=best_ckpt, use_tta=True, method="rank")
+        print(f"  [OK] Saved submission to {config.submission_path} ({len(sub_df)} predictions)")
+    else:
+        print("[Execution Step 2 & 3 & 4] Skipping inference generation since no trained checkpoint is available.")
 
     # Step 5: Start FastAPI server in background process
     print("\n[Execution Step 5] Starting FastAPI server on http://127.0.0.1:8000 ...")

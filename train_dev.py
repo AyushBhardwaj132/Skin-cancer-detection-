@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, confusion_matrix, precision_recall_curve,
-    average_precision_score,
+    average_precision_score, balanced_accuracy_score, matthews_corrcoef,
 )
 from sklearn.calibration import calibration_curve
 
@@ -111,6 +111,7 @@ def get_config(args: argparse.Namespace) -> dict:
         "target_column": "target",
         "image_id_column": "isic_id",
         "patient_column": "patient_id",
+        "use_lesion_crop": False,
     }
 
     # Load from YAML
@@ -134,6 +135,8 @@ def get_config(args: argparse.Namespace) -> dict:
         cfg["checkpoint_dir"] = args.checkpoint_dir
     if getattr(args, "evaluation_dir", None) is not None:
         cfg["evaluation_dir"] = args.evaluation_dir
+    if getattr(args, "use_lesion_crop", False):
+        cfg["use_lesion_crop"] = True
 
     # Auto-adjust batch size based on available RAM
     if cfg["batch_size"] == "auto" or cfg["batch_size"] is None:
@@ -226,6 +229,7 @@ def build_dev_loaders(cfg: dict) -> tuple[DataLoader, DataLoader, int, MetadataP
         target_col=cfg["target_column"],
         image_id_col=cfg["image_id_column"],
         metadata_tensor=train_meta_features,
+        use_lesion_crop=cfg.get("use_lesion_crop", False),
     )
     val_dataset = ISICDataset(
         val_df,
@@ -234,6 +238,7 @@ def build_dev_loaders(cfg: dict) -> tuple[DataLoader, DataLoader, int, MetadataP
         target_col=cfg["target_column"],
         image_id_col=cfg["image_id_column"],
         metadata_tensor=val_meta_features,
+        use_lesion_crop=cfg.get("use_lesion_crop", False),
     )
 
     # --- Weighted sampler for class imbalance (same as production) ---
@@ -389,6 +394,8 @@ def validate_epoch(
     prec = float(precision_score(y_true, binary_preds, zero_division=0))
     rec = float(recall_score(y_true, binary_preds, zero_division=0))
     f1 = float(f1_score(y_true, binary_preds, zero_division=0))
+    bal_acc = float(balanced_accuracy_score(y_true, binary_preds))
+    mcc = float(matthews_corrcoef(y_true, binary_preds))
 
     return {
         "loss": avg_loss,
@@ -398,6 +405,8 @@ def validate_epoch(
         "precision": prec,
         "recall": rec,
         "f1": f1,
+        "balanced_accuracy": bal_acc,
+        "mcc": mcc,
         "y_true": y_true,
         "y_score": y_score,
     }
@@ -817,13 +826,35 @@ def train_dev(cfg: dict) -> dict:
         evaluation_dir,
     )
 
+    # --- Generate learning curves ---
+    if (checkpoint_dir / "training_history.csv").exists():
+        try:
+            hist_df = pd.read_csv(checkpoint_dir / "training_history.csv")
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.plot(hist_df["epoch"], hist_df["train_loss"], "o-", label="Train Loss", color="#1f77b4")
+            ax.plot(hist_df["epoch"], hist_df["val_loss"], "s--", label="Val Loss", color="#ff7f0e")
+            if "val_roc_auc" in hist_df.columns:
+                ax.plot(hist_df["epoch"], hist_df["val_roc_auc"], "^-.", label="Val ROC-AUC", color="#2ca02c")
+            ax.set_title("Learning Curves", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Epoch")
+            ax.set_ylabel("Score / Loss")
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(evaluation_dir / "learning_curves.png", dpi=150)
+            plt.close()
+        except Exception as e:
+            print(f"  [WARN] Could not save learning_curves.png: {e}")
+
     print(f"\n  Final Evaluation Metrics:")
-    print(f"    ROC-AUC:   {final_metrics['roc_auc']:.4f}")
-    print(f"    pAUC@0.1:  {final_metrics['pauc']:.4f}")
-    print(f"    Accuracy:  {final_metrics['accuracy']:.4f}")
-    print(f"    Precision: {final_metrics['precision']:.4f}")
-    print(f"    Recall:    {final_metrics['recall']:.4f}")
-    print(f"    F1 Score:  {final_metrics['f1']:.4f}")
+    print(f"    ROC-AUC:            {final_metrics['roc_auc']:.4f}")
+    print(f"    pAUC@0.1:           {final_metrics['pauc']:.4f}")
+    print(f"    Accuracy:           {final_metrics['accuracy']:.4f}")
+    print(f"    Precision:          {final_metrics['precision']:.4f}")
+    print(f"    Recall:             {final_metrics['recall']:.4f}")
+    print(f"    F1 Score:           {final_metrics['f1']:.4f}")
+    print(f"    Balanced Accuracy:  {final_metrics['balanced_accuracy']:.4f}")
+    print(f"    MCC:                {final_metrics['mcc']:.4f}")
 
     # =========================================================================
     # Phase 7: Debug Model Quality
@@ -887,6 +918,7 @@ def main():
     parser.add_argument("--focal-alpha", type=float, default=None, help="Override focal loss alpha")
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Override checkpoint output directory")
     parser.add_argument("--evaluation-dir", type=str, default=None, help="Override evaluation output directory")
+    parser.add_argument("--use-lesion-crop", action="store_true", help="Enable lesion-centered crop preprocessing")
     args = parser.parse_args()
 
     cfg = get_config(args)

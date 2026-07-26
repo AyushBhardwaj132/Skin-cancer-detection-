@@ -1,0 +1,72 @@
+# =============================================================================
+# ISIC 2024 — Kaggle GPU Pipeline Configuration
+# =============================================================================
+# Optimized for Kaggle P100 / T4 / V100 GPU training environment.
+# Uses full competition dataset (37,724 images) with FP16 mixed precision.
+# =============================================================================
+
+mode: kaggle_gpu
+
+# --- Model Architecture ---
+backbone_name: tf_efficientnetv2_s
+image_size: 224
+
+# --- Metadata Fusion ---
+use_metadata: true
+use_patient_features: true
+use_ugly_duckling: true
+metadata_mlp_hidden: 256
+metadata_mlp_output: 128
+
+# --- Training Hyperparameters ---
+num_epochs: 10
+batch_size: 32
+learning_rate: 0.0001
+weight_decay: 0.0001
+
+# --- Optimizer & Scheduler ---
+optimizer: AdamW
+scheduler: CosineAnnealingLR
+scheduler_eta_min: 0.000001
+
+# --- Loss Function ---
+loss_type: focal
+focal_alpha: 0.50
+focal_gamma: 2.0
+
+# --- Regularization & Cross Validation ---
+n_splits: 5
+early_stopping_patience: 5
+max_grad_norm: 1.0
+
+# --- Augmentation & Regularization ---
+use_advanced_augs: true
+use_mixup: false
+use_cutmix: false
+
+# --- Exponential Moving Average (EMA) ---
+use_ema: true
+ema_decay: 0.999
+
+# --- Kaggle GPU Hardware Acceleration ---
+use_cuda: true
+use_fp16: true
+num_workers: 4
+pin_memory: true
+cudnn_benchmark: true
+
+# --- Reproducibility ---
+seed: 42
+
+# --- Kaggle Paths (Environment Aware Defaults) ---
+kaggle_input_dir: /kaggle/input/isic-2024-challenge
+kaggle_output_dir: /kaggle/working/outputs
+train_metadata_name: train-metadata.csv
+test_metadata_name: test-metadata.csv
+train_image_dir_name: train-image
+test_image_dir_name: test-image
+
+# --- Column Names ---
+target_column: target
+image_id_column: isic_id
+patient_column: patient_id

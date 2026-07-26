@@ -5,12 +5,33 @@ from pathlib import Path
 import os
 
 
+def _detect_data_dir() -> Path:
+    if os.getenv("DATA_DIR"):
+        return Path(os.getenv("DATA_DIR"))
+    kaggle_paths = [
+        Path("/kaggle/input/isic-2024-challenge"),
+        Path("/kaggle/input/isic-2024"),
+    ]
+    for kp in kaggle_paths:
+        if kp.exists():
+            return kp
+    return Path("data")
+
+
+def _detect_output_dir() -> Path:
+    if os.getenv("OUTPUT_DIR"):
+        return Path(os.getenv("OUTPUT_DIR"))
+    if Path("/kaggle/working").exists():
+        return Path("/kaggle/working/outputs")
+    return Path("outputs")
+
+
 @dataclass(slots=True)
 class Config:
     """Production configuration dataclass with environment-aware default paths."""
     project_name: str = "ISIC2024"
-    data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "data")))
-    output_dir: Path = field(default_factory=lambda: Path(os.getenv("OUTPUT_DIR", "outputs")))
+    data_dir: Path = field(default_factory=_detect_data_dir)
+    output_dir: Path = field(default_factory=_detect_output_dir)
     
     # Metadata & Image Directories
     train_metadata_name: str = "train-metadata.csv"

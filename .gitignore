@@ -8,21 +8,32 @@ env/
 venv/
 .venv/
 ENV/
+.pytest_cache/
+.cache/
 
 # Data & Datasets
+datasets/
 data/*.csv
 data/*.hdf5
 data/train-image/
 data/test-image/
+cache/
 
-# Model Checkpoints & Large Artifacts
+# Outputs, Logs & Model Checkpoints
+outputs/
+checkpoints/
+logs/
 outputs/checkpoints/
+outputs/evaluation/
+outputs/logs/
+outputs/audit/
 outputs/metadata_processor.joblib
 outputs/predictions/
 outputs/figures/
 *.pt
 *.pth
 *.onnx
+*.joblib
 
 # IDE & OS
 .vscode/

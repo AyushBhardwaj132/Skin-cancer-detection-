@@ -1,0 +1,113 @@
+import json
+from pathlib import Path
+
+def create_kaggle_notebook():
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "metadata": {},
+                "source": [
+                    "# 🔬 ISIC 2024 Skin Cancer Detection — Kaggle GPU Training Notebook\n",
+                    "\n",
+                    "This notebook automates end-to-end 5-fold competition training of the **Multimodal FusionModel** (`EfficientNetV2` + `MetadataMLP` + `Ugly Duckling` scores) using Kaggle GPU acceleration (P100 / T4).\n",
+                    "\n",
+                    "### Pipeline Highlights:\n",
+                    "- **Zero Code Modifications Required**: Auto-detects Kaggle GPU, dataset paths, and CUDA FP16.\n",
+                    "- **5-Fold GroupKFold**: Leakage-free patient-level cross-validation.\n",
+                    "- **Rank-Averaged Ensemble**: Blends predictions across 5 fold checkpoints.\n",
+                    "- **Submission Generator**: Automatically exports `submission.csv` and compresses checkpoints for download."
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Step 1: Clone Repository & Setup Environment\n",
+                    "import os\n",
+                    "from pathlib import Path\n",
+                    "\n",
+                    "REPO_URL = 'https://github.com/AyushBhardwaj132/Skin-cancer-detection-.git'\n",
+                    "REPO_DIR = '/kaggle/working/Skin-cancer-detection-'\n",
+                    "\n",
+                    "if not Path(REPO_DIR).exists():\n",
+                    "    !git clone {REPO_URL} {REPO_DIR}\n",
+                    "\n",
+                    "%cd {REPO_DIR}\n",
+                    "!pip install -q -r requirements.txt\n"
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Step 2: Check GPU Hardware Acceleration\n",
+                    "import torch\n",
+                    "print(f'PyTorch Version: {torch.__version__}')\n",
+                    "print(f'CUDA Available: {torch.cuda.is_available()}')\n",
+                    "if torch.cuda.is_available():\n",
+                    "    print(f'GPU Device: {torch.cuda.get_device_name(0)}')\n",
+                    "    !nvidia-smi\n"
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Step 3: Run Full 5-Fold GroupKFold Competition Training Pipeline\n",
+                    "# Note: Uses train_kaggle.py with automatic Kaggle path detection & FP16\n",
+                    "!python train_kaggle.py --all-folds --epochs 10\n"
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Step 4: Run Inference & Generate Competition Submission CSV\n",
+                    "!python main.py infer --method rank\n"
+                ]
+            },
+            {
+                "cell_type": "code",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [
+                    "# Step 5: Verify Submission Format & Zip Checkpoints for Download\n",
+                    "import pandas as pd\n",
+                    "sub_path = Path('/kaggle/working/outputs/predictions/submission.csv')\n",
+                    "if sub_path.exists():\n",
+                    "    sub_df = pd.read_csv(sub_path)\n",
+                    "    print(f'Submission generated successfully! Shape: {sub_df.shape}')\n",
+                    "    print(sub_df.head())\n",
+                    "\n",
+                    "# Compress checkpoints for local download\n",
+                    "!zip -q -r /kaggle/working/isic2024_checkpoints.zip /kaggle/working/outputs/checkpoints/\n",
+                    "print('Checkpoints zipped to /kaggle/working/isic2024_checkpoints.zip')\n"
+                ]
+            }
+        ],
+        "metadata": {
+            "language_info": {
+                "name": "python"
+            }
+        },
+        "nbformat": 4,
+        "nbformat_minor": 4
+    }
+
+    out_path = Path(__file__).resolve().parent.parent / "kaggle_train.ipynb"
+    with open(out_path, "w") as f:
+        json.dump(notebook, f, indent=2)
+    print(f"Generated Kaggle notebook: {out_path}")
+
+if __name__ == "__main__":
+    create_kaggle_notebook()
