@@ -35,15 +35,22 @@ def validate(
 
     with torch.no_grad():
         for batch in dataloader:
-            # Support both (image, meta, label) and legacy (image, label)
-            if len(batch) == 3:
-                images, metadata, labels = batch
+            if isinstance(batch, dict):
+                images = batch["image"].to(device)
+                metadata = batch["metadata"].to(device) if ("metadata" in batch and batch["metadata"] is not None) else None
+                labels = batch["target"].to(device).float().unsqueeze(1)
+            elif isinstance(batch, (tuple, list)):
+                if len(batch) == 3:
+                    images, metadata, labels = batch
+                else:
+                    images, labels = batch
+                    metadata = None
+                images = images.to(device)
+                labels = labels.to(device).float().unsqueeze(1)
+                if metadata is not None:
+                    metadata = metadata.to(device)
             else:
-                images, labels = batch
-                metadata = None
-
-            images = images.to(device)
-            labels = labels.to(device).float().unsqueeze(1)
+                raise TypeError(f"Unsupported batch type in validate: {type(batch)}")
 
             if use_metadata and metadata is not None:
                 metadata = metadata.to(device)
