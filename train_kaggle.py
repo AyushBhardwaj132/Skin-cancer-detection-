@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import torch
 from src.config import Config
-from src.train import train, train_full_ensemble
+from src.train import train
 
 
 def setup_kaggle_hardware(config: Config) -> None:
@@ -109,8 +109,12 @@ def main() -> None:
     print("=" * 80 + "\n")
 
     if args.all_folds:
-        print("Executing Full 5-Fold GroupKFold Ensemble Pipeline on Kaggle...")
-        train_full_ensemble(config, resume=args.resume)
+        print(f"Training backbone '{config.backbone_name}' across all {config.n_splits} folds...\n")
+        for fold in range(config.n_splits):
+            print(f"\n{'='*80}")
+            print(f"  Fold {fold}/{config.n_splits - 1} | Backbone: {config.backbone_name}")
+            print(f"{'='*80}")
+            train(config, fold_idx=fold, resume=args.resume)
     else:
         print(f"Executing Single-Fold Training Pipeline for Fold {args.fold}...")
         train(config, fold_idx=args.fold, resume=args.resume)
