@@ -35,7 +35,7 @@ def discover_available_models() -> list[dict]:
     # --- Development model ---
     if DEV_BEST_MODEL.exists():
         try:
-            ckpt = torch.load(DEV_BEST_MODEL, map_location="cpu", weights_only=False)
+            ckpt = load_checkpoint(DEV_BEST_MODEL, map_location="cpu")
             models.append({
                 "name": "Development Model",
                 "path": str(DEV_BEST_MODEL),
@@ -67,7 +67,7 @@ def discover_available_models() -> list[dict]:
 
     for ckpt_path in prod_checkpoints[:3]:  # Limit to first 3 production checkpoints
         try:
-            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            ckpt = load_checkpoint(ckpt_path, map_location="cpu")
             models.append({
                 "name": f"Production Model ({ckpt_path.parent.name}/{ckpt_path.name})",
                 "path": str(ckpt_path),

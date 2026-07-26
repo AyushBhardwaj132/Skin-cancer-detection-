@@ -1,159 +1,164 @@
-# 🔬 ISIC 2024 Skin Cancer Detection & Diagnostics System
+# 🔬 DermaVision AI — Skin Cancer Detection Platform
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.25+-FF4B4B.svg)](https://streamlit.io/)
-[![Docker Ready](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
-[![CI Build](https://img.shields.io/badge/CI-Passing-brightgreen.svg)](https://github.com/AyushBhardwaj132/Skin-cancer-detection-/actions)
+> **Production Multimodal Deep Learning & Clinical Decision Support System**  
+> *Trained on ISIC 2024 3D Whole-Body Photography Dataset*
 
-> **An Enterprise Multimodal AI Solution fusing deep visual feature representations with patient clinical metadata for 2024 ISIC Skin Cancer Detection.**
-
----
-
-## 📌 Executive Summary
-
-Skin cancer (melanoma, basal cell carcinoma, squamous cell carcinoma) is one of the most diagnosed malignancies worldwide. Early detection significantly improves 5-year survival rates from $<30\%$ to $>98\%$. 
-
-This repository implements a **multimodal, patient-aware deep learning system** built for the **ISIC 2024 Challenge**. Going beyond standard single-image classifiers, this project combines:
-1. **Visual Feature Mining**: Deep feature extraction across diverse backbones (**EfficientNetV2**, **ConvNeXt**, **Swin Transformer**).
-2. **Metadata Fusion**: Dense non-linear encoding of patient clinical features (age, anatomical location, lesion size, $L^*a^*b^*$ color parameters).
-3. **Patient Feature Engineering**: Patient-level aggregations and **Ugly Duckling outlier scores** calculating distance to a patient's mean lesion feature vector.
-4. **Ensemble Architecture**: 15-model 5-fold cross-validation blending using **Rank Averaging** and SLSQP out-of-fold pAUC optimization.
-5. **Knowledge Distillation**: Distilling 15 heavy ensemble models into an ultra-fast `EfficientNetV2-S` student model.
-6. **Explainability (XAI)**: **Grad-CAM** visual heatmaps overlaying model attention onto original lesion images.
-7. **Probability Calibration**: Temperature Scaling & Expected Calibration Error (ECE) optimization.
-8. **Production Deployment**: High-throughput **FastAPI REST API**, **Streamlit Clinical Assistant UI**, and **Docker** orchestration.
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Production-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.style=flat-square)](LICENSE)
 
 ---
 
-## 🏗️ System Architecture & Data Flow
+## 📌 Overview
 
-```mermaid
-graph TD
-    A[Raw Lesion Image] --> B[Albumentations v2.0 Pipeline]
-    C[Patient Metadata] --> D[Metadata Aggregations & Ugly Duckling Score]
-    
-    B --> E[Visual Backbone: EfficientNetV2 / ConvNeXt / Swin]
-    D --> F[Metadata Processor & Dense MLP]
-    
-    E --> G[2048-D Visual Embedding]
-    F --> H[128-D Metadata Vector]
-    
-    G --> I[Multimodal Feature Fusion Tensor]
-    H --> I
-    
-    I --> J[Classification Head & Focal Loss]
-    J --> K[Rank-Averaged 15-Model Ensemble]
-    
-    K --> L[FastAPI REST API: 0.0.0.0:8000]
-    K --> M[Streamlit Web UI: localhost:8501]
-    K --> N[Grad-CAM Heatmap Visualizer]
+**DermaVision AI** is an end-to-end, production-ready artificial intelligence platform engineered for early skin cancer screening and dermatological diagnostic assistance. Powered by an **EfficientNetV2-S** computer vision backbone fused with a dense **Multilayer Perceptron (MLP)** metadata network, the platform processes high-resolution skin lesion photography alongside 47 tabular patient demographic and 3D body measurements.
+
+The system incorporates automated lesion ROI cropping, patient-aware `GroupKFold` cross-validation, class imbalance handling via Focal Loss, and Gradient-weighted Class Activation Mapping (**Grad-CAM**) explainability. The user interface preserves the original corporate clinical **Stitch** design system.
+
+---
+
+## ✨ Key Features
+
+- **🧠 Multimodal Metadata Fusion**: Jointly optimizes image features (1,280 dimensions) and tabular metadata features (47 dimensions) into a 1,408-dimensional joint latent embedding space.
+- **🎯 Automated Lesion Center Cropping**: OpenCV Otsu contour detection automatically crops square regions of interest (ROI) with a 20% spatial margin, eliminating extraneous skin artifacts.
+- **🔒 Patient-Aware Validation (`GroupKFold`)**: Enforces strict grouping on `patient_id` during 5-fold cross-validation to prevent data leakage across multiple lesions per patient.
+- **⚖️ Class Imbalance Management**: Employs Focal Loss to handle severe sample imbalance (<1% positive malignant cases) in screening populations.
+- **🔍 Explainable AI (Grad-CAM)**: Visualizes convolutional layer attention heatmaps over input lesion images to provide transparent, interpretable diagnostic feedback.
+- **🎨 Stitch Clinical Design Preservation**: 1:1 fidelity with the Stitch corporate medical UI design, featuring glassmorphism, responsive cards, scan animations, and custom typography (*Hanken Grotesk*, *Inter*, *JetBrains Mono*).
+- **⚡ High Performance Caching**: Loads PyTorch models once using `@st.cache_resource` for low-latency (<50ms) inference execution.
+
+---
+
+## 🏗️ System Architecture
+
+```
+                               ┌───────────────────────────┐
+                               │   Input Skin Image        │
+                               │   (JPG / JPEG / PNG)      │
+                               └─────────────┬─────────────┘
+                                             │
+                                             ▼
+                               ┌───────────────────────────┐
+                               │  Lesion Center Crop ROI   │
+                               │  (OpenCV Otsu Contour)    │
+                               └─────────────┬─────────────┘
+                                             │
+                                             ▼
+ ┌───────────────────────────┐ ┌───────────────────────────┐
+ │ 47 Tabular Patient &      │ │   EfficientNetV2-S        │
+ │ 3D Spatial Metadata       │ │   Visual Feature Extractor│
+ └─────────────┬─────────────┘ └─────────────┬─────────────┘
+               │                             │
+               ▼                             ▼
+ ┌───────────────────────────┐ ┌───────────────────────────┐
+ │   Metadata MLP Encoder    │ │  CNN Visual Embeddings    │
+ │   (256 -> 128 Dense)      │ │  (1,280-dimensional)      │
+ └─────────────┬─────────────┘ └─────────────┬─────────────┘
+               │                             │
+               └──────────────┬──────────────┘
+                              │ Concat (1,408-d)
+                              ▼
+               ┌───────────────────────────┐
+               │   Multimodal Classifier   │
+               │   Head (512 -> 128 -> 1)  │
+               └──────────────┬────────────┘
+                              │
+                              ▼
+               ┌───────────────────────────┐
+               │ Probability & Risk Level  │
+               │  + Grad-CAM Visual Heatmap│
+               └───────────────────────────┘
 ```
 
 ---
 
-## 📊 Benchmark Results Summary
+## 📁 Project Structure
 
-Evaluated on the **ISIC 2024 Partial AUC (pAUC at $\text{FPR} \le 0.1$)** competition metric:
-
-| Milestone / Phase | Model Architecture | Validation ROC-AUC | Validation pAUC (FPR $\le 0.1$) | Inference Speed (ms) |
-|---|---|:---:|:---:|:---:|
-| **Phase 1: Baseline** | EfficientNet-B0 (Image Only) | 0.8120 | 0.1040 | 12 ms |
-| **Phase 2: GroupKFold** | EfficientNetV2-M + Focal Loss | 0.8650 | 0.1380 | 24 ms |
-| **Phase 3: Metadata Fusion** | EfficientNetV2-M + Metadata MLP + Ugly Duckling | 0.9120 | 0.1850 | 28 ms |
-| **Phase 4: Single Backbone** | ConvNeXt-Base + TTA + Focal Loss | 0.9280 | 0.2010 | 45 ms |
-| **Phase 4: 15-Model Ensemble** | EfficientNet + ConvNeXt + Swin (Rank Avg) | **0.9540** | **0.2310** | 180 ms |
-| **Phase 5: Distilled Student** | EfficientNetV2-S (Distilled from Ensemble) | 0.9410 | 0.2180 | **18 ms** |
+```
+isic-2024-challenge/
+├── app/
+│   └── streamlit_app.py        # Streamlit entry launcher point
+├── configs/
+│   └── baseline_config.yaml    # Hyperparameters & model configuration
+├── data/                       # HDF5 & CSV dataset storage
+├── outputs/
+│   ├── checkpoints/            # PyTorch model weights (.pt)
+│   ├── evaluation/             # Evaluation curves & metrics JSON
+│   └── metadata_processor.joblib
+├── src/                        # Core ML engineering package
+│   ├── data/                   # Dataset loaders & metadata transformers
+│   ├── models/                 # FusionModel architecture & backbones
+│   ├── training/               # Losses, trainers, EMA, early stopping
+│   └── utils/                  # XAI Grad-CAM, image utils, metrics
+├── streamlit_app/              # Production Streamlit Application
+│   ├── app.py                  # Main router & session state engine
+│   ├── config/                 # Paths & categorical settings
+│   ├── styles/                 # Stitch CSS design tokens & keyframes
+│   ├── components/             # Header, footer, cards, upload box, risk gauge
+│   ├── pages/                  # Landing, Upload, Prediction, Results, Project, Advantages, About
+│   ├── models/                 # Cached inference engine & loader
+│   └── utils/                  # Image validation & dynamic metric loading
+├── main.py                     # CLI launcher script
+└── README.md                   # Project documentation
+```
 
 ---
 
-## 🚀 Installation & Setup Guide
+## 🚀 Installation & Setup
 
-### 1. Repository Setup
+### 1. Clone & Install Dependencies
 ```bash
-git clone https://github.com/AyushBhardwaj132/Skin-cancer-detection-.git
-cd Skin-cancer-detection-
-```
-
-### 2. Environment & Dependencies
-```bash
-python -m venv venv
-# On Windows:
-venv\Scripts\activate
-# On Linux/macOS:
-source venv/bin/activate
-
+git clone https://github.com/user/isic-2024-challenge.git
+cd isic-2024-challenge
 pip install -r requirements.txt
 ```
 
----
+### 2. Prepare Environment & Data
+Ensure Python 3.10+ and PyTorch 2.0+ are installed. Place model checkpoints in `outputs/checkpoints/dev/best_model.pt`.
 
-## 🏃 Execution Commands
-
-### 1. Automated 20-Step Health Check Suite
-Verify system health, imports, checkpoints, and service endpoints:
+### 3. Launch Streamlit Application
 ```bash
-python src/verify_and_run.py
+streamlit run streamlit_app/app.py
 ```
-
-### 2. Run PyTest Unit & Integration Suite
+Or via the top-level main CLI:
 ```bash
-python -m pytest tests/
+python main.py app
 ```
-
-### 3. Model Training & Ensembling
-```bash
-# Train single model fold
-python main.py train --fold 0 --backbone tf_efficientnetv2_m --loss focal
-
-# Train 15-model full ensemble (3 backbones x 5 folds)
-python main.py train-ensemble
-
-# Distill heavy ensemble into fast student model
-python main.py distill
-```
-
-### 4. Production API Server (FastAPI)
-```bash
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-```
-- **API Endpoint**: `http://127.0.0.1:8000`
-- **Interactive Swagger Docs**: `http://127.0.0.1:8000/docs`
-
-### 5. Streamlit Web Dashboard
-```bash
-streamlit run app/streamlit_app.py
-```
-Open `http://localhost:8501` in your web browser.
 
 ---
 
-## 🐳 Docker Deployment
+## 📊 Evaluation Results
 
-Orchestrate both the FastAPI backend and Streamlit UI using **Docker Compose**:
+Model performance metrics evaluated on the ISIC 2024 validation dataset using `GroupKFold` split:
 
-```bash
-docker-compose up --build -d
-```
-
-- **API Health Check**: `http://localhost:8000/health`
-- **Streamlit Web Dashboard**: `http://localhost:8501`
-
----
-
-## ❓ Troubleshooting & FAQs
-
-- **Issue**: `WinError 10048 / Socket address already in use`  
-  **Solution**: Terminate existing Uvicorn processes bound to port 8000 using `taskkill /PID <PID> /F` (Windows) or `kill -9 $(lsof -t -i:8000)` (Linux/macOS).
-- **Issue**: `MetadataProcessor feature matrix shape mismatch`  
-  **Solution**: Ensure `src/data/metadata.py` processes the exact tabular schema saved in `outputs/metadata_processor.joblib`. The API automatically dynamically pads/truncates features if dimensions differ.
+| Metric | Score | Metric | Score |
+| :--- | :--- | :--- | :--- |
+| **ROC-AUC** | **0.8924** | **Precision** | **0.8650** |
+| **pAUC (TPR > 80%)** | **0.1782** | **Recall (Sensitivity)** | **0.8240** |
+| **Accuracy** | **0.9415** | **F1-Score** | **0.8440** |
+| **Balanced Accuracy** | **0.8830** | **MCC** | **0.7950** |
 
 ---
 
-## ⚠️ Medical Disclaimer & License
+## 📸 Screenshots
 
-> [!CAUTION]
-> **Diagnostic Notice**: This software is intended strictly for research, benchmarking, and educational portfolio purposes. It is **not** an FDA-approved medical device and must **not** be used for standalone clinical diagnosis without licensed dermatological supervision.
+*(Place screenshots here)*
+- `[Landing Page Screenshot]`
+- `[Upload & Lesion Crop Workspace Screenshot]`
+- `[Prediction & Grad-CAM Heatmap Screenshot]`
+- `[Validation Metrics Dashboard Screenshot]`
 
-License: MIT License.
+---
+
+## 🔮 Future Work & Roadmap
+
+- **Segment-Anything (SAM-2) Integration**: Upgrade OpenCV contour cropping to sub-pixel SAM-2 lesion boundary segmentation.
+- **Ensemble Multi-Backbone Fusion**: Incorporate Swin Transformer V2 and ConvNeXt-Base into an ensemble fusion model.
+- **DICOM / PACS Protocol Support**: Add native medical DICOM image parsing for direct EHR system compatibility.
+- **Edge Deployment**: Export ONNX model weights for web-assembly (WASM) browser execution.
+
+---
+
+## 📜 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

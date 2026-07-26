@@ -70,8 +70,30 @@ def save_checkpoint(state: dict, path: str | Path) -> Path:
     return path
 
 
-def load_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") -> dict:
-    return torch.load(Path(path), map_location=map_location)
+def load_checkpoint(
+    path: str | Path,
+    map_location: str | torch.device = "cpu",
+    weights_only: bool = False,
+) -> dict:
+    """Loads a PyTorch model checkpoint.
+
+    Args:
+        path: Path to the checkpoint file (.pt or .pth).
+        map_location: Target device for loaded tensors (default "cpu").
+        weights_only: If True, uses PyTorch weights-only unpickler. Defaults to False
+            to allow loading full state dictionaries, optimizers, schedulers, and configs
+            without PyTorch 2.6+ unpickling errors.
+
+    Returns:
+        Loaded state dictionary.
+    """
+    path_obj = Path(path)
+    try:
+        return torch.load(path_obj, map_location=map_location, weights_only=weights_only)
+    except TypeError:
+        # Fallback for older PyTorch versions (<2.0) that do not accept weights_only kwarg
+        return torch.load(path_obj, map_location=map_location)
+
 
 
 def seed_worker(worker_id: int) -> None:

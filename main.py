@@ -176,7 +176,7 @@ def main() -> None:
     elif args.mode == "app":
         import subprocess
         print("Starting Streamlit Web Application on http://localhost:8501 ...")
-        subprocess.run(["streamlit", "run", "app/streamlit_app.py"])
+        subprocess.run(["streamlit", "run", "streamlit_app/app.py"])
 
     else:
         print(f"ISIC 2024 — Phase 5: Advanced Modeling, XAI, Deployment & Documentation")
