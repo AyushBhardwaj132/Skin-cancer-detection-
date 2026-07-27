@@ -67,18 +67,55 @@ def _run_forward(target_model: nn.Module, img: torch.Tensor | None, meta: torch.
     return target_model(img)
 
 
+def _measure_real_training_throughput(
+    target_model: nn.Module,
+    img: torch.Tensor,
+    meta: torch.Tensor | None,
+    device: torch.device,
+) -> float:
+    """Measures REAL training throughput under train mode with AMP autocast and backward pass."""
+    target_model.train()
+    use_amp = device.type == "cuda"
+
+    # Warmup
+    target_model.zero_grad(set_to_none=True)
+    with torch.amp.autocast("cuda", enabled=use_amp):
+        out = _run_forward(target_model, img, meta)
+        loss = out.sum() if isinstance(out, torch.Tensor) else out[0].sum()
+    loss.backward()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    # Measured 3 REAL training steps (forward + backward)
+    t0 = time.perf_counter()
+    n_steps = 3
+    for _ in range(n_steps):
+        target_model.zero_grad(set_to_none=True)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            out = _run_forward(target_model, img, meta)
+            loss = out.sum() if isinstance(out, torch.Tensor) else out[0].sum()
+        loss.backward()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t1 = time.perf_counter()
+
+    throughput = (n_steps * img.size(0)) / max(t1 - t0, 1e-5)
+    target_model.zero_grad(set_to_none=True)
+    return throughput
+
+
 def setup_accelerated_model(
     model: nn.Module,
     device: torch.device,
     sample_batch: dict | None = None,
 ) -> tuple[nn.Module, dict]:
-    """Configures DDP or benchmarks DataParallel vs Single GPU throughput.
+    """Configures DDP or benchmarks REAL training throughput (DataParallel vs Single GPU).
 
-    Model-agnostic: automatically detects whether model expects 1 input tensor (image)
-    or 2 input tensors (image, metadata).
-
-    If DataParallel is slower due to Python GIL or PCI-e broadcast overhead,
-    automatically falls back to Single GPU mode for maximum throughput.
+    Measures throughput under REAL training conditions (train mode, AMP autocast, AND backward pass).
+    If DataParallel is slower due to PCI-e gradient scatter/gather latency or GIL overhead,
+    automatically disables DataParallel and falls back to Single GPU mode for maximum speed.
 
     Returns:
         (accelerated_model, metrics_report)
@@ -112,49 +149,24 @@ def setup_accelerated_model(
 
     # Case 2: Multi-GPU available in single process (DataParallel candidate)
     if hw["gpu_count"] > 1 and sample_batch is not None:
-        model.eval()
         img, meta = _extract_inputs(sample_batch, device)
 
         if img is not None:
-            # Validate if model can actually run forward pass on sample_batch
+            # Step 1: Benchmark Single GPU REAL training throughput
             try:
-                with torch.no_grad():
-                    _ = _run_forward(model, img, meta)
-                torch.cuda.synchronize()
+                single_throughput = _measure_real_training_throughput(model, img, meta, device)
+                metrics["single_gpu_throughput"] = single_throughput
             except Exception:
                 print("  [HARDWARE] Generic model or batch shape mismatch detected. Skipping DataParallel benchmark.")
                 return model, metrics
 
-            print(f"  [MULTI-GPU BENCHMARK] Profiling Single GPU vs DataParallel throughput across {hw['gpu_count']} GPUs...")
-
-            # Test 1: Single GPU Throughput
-            t0 = time.perf_counter()
-            with torch.no_grad():
-                for _ in range(5):
-                    _ = _run_forward(model, img, meta)
-            torch.cuda.synchronize()
-            t1 = time.perf_counter()
-            single_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
-            metrics["single_gpu_throughput"] = single_throughput
-
-            # Test 2: DataParallel Throughput
+            # Step 2: Benchmark DataParallel REAL training throughput
             dp_model = nn.DataParallel(model)
-            dp_model.eval()
             try:
-                with torch.no_grad():
-                    _ = _run_forward(dp_model, img, meta)
-                torch.cuda.synchronize()
-
-                t0 = time.perf_counter()
-                with torch.no_grad():
-                    for _ in range(5):
-                        _ = _run_forward(dp_model, img, meta)
-                torch.cuda.synchronize()
-                t1 = time.perf_counter()
-                dp_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
+                dp_throughput = _measure_real_training_throughput(dp_model, img, meta, device)
                 metrics["dataparallel_throughput"] = dp_throughput
 
-                print(f"  [BENCHMARK RESULT] Single GPU: {single_throughput:.1f} img/s | DataParallel: {dp_throughput:.1f} img/s")
+                print(f"  [REAL TRAINING BENCHMARK] Single GPU: {single_throughput:.1f} img/s | DataParallel: {dp_throughput:.1f} img/s")
 
                 if dp_throughput > single_throughput * 1.05:
                     print(f"  [MULTI-GPU] DataParallel selected ({dp_throughput:.1f} img/s)")
@@ -162,13 +174,13 @@ def setup_accelerated_model(
                     metrics["selected_throughput"] = dp_throughput
                     return dp_model, metrics
                 else:
-                    print(f"  [AUTOMATIC FALLBACK] DataParallel is slower ({dp_throughput:.1f} img/s) than Single GPU ({single_throughput:.1f} img/s) due to GIL/PCI-e overhead.")
-                    print(f"  [AUTOMATIC FALLBACK] Automatically falling back to Single GPU mode for maximum throughput!")
+                    print(f"  [AUTOMATIC FALLBACK] DataParallel real training throughput ({dp_throughput:.1f} img/s) is slower than Single GPU ({single_throughput:.1f} img/s) due to PCI-e gradient gather latency.")
+                    print(f"  [AUTOMATIC FALLBACK] Automatically disabling DataParallel and selecting Single GPU mode for Kaggle execution!")
                     metrics["mode"] = "Single GPU (Fallback from DP)"
                     metrics["selected_throughput"] = single_throughput
                     return model, metrics
             except Exception:
-                print("  [HARDWARE] DataParallel wrapper execution failed. Falling back to Single GPU mode.")
+                print("  [HARDWARE] DataParallel execution failed during training benchmark. Falling back to Single GPU mode.")
                 return model, metrics
 
     # Default Single GPU
