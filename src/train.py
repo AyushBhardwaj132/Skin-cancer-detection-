@@ -440,22 +440,92 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             cutmix_alpha=config.cutmix_alpha,
             use_fp16=config.use_fp16,
         )
+        print(f"\n[1/8] Training finished | train_loss={train_loss:.4f}")
 
+        # Save LAST checkpoint & update training_state.json IMMEDIATELY after training (BEFORE validation)
+        training_state.current_fold = fold_idx
+        training_state.last_epoch = epoch
+        if best_pauc != float("-inf") and not np.isnan(best_pauc):
+            training_state.best_pauc = best_pauc
+        training_state.save(config.output_dir)
+        print("✓ Resume information saved")
+
+        initial_checkpoint_payload = {
+            "epoch": epoch,
+            "fold": fold_idx,
+            "model_name": config.backbone_name if config.use_metadata else config.model_name,
+            "model_state_dict": raw_model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+            "ema_state_dict": ema.module.state_dict() if ema is not None else None,
+            "best_val_pauc": best_pauc if best_pauc != float("-inf") else 0.0,
+            "best_val_auc": best_auc if best_auc != float("-inf") else 0.0,
+            "val_pauc": float("nan"),
+            "val_auc": float("nan"),
+            "val_loss": float("nan"),
+            "metadata_dim": metadata_dim,
+            "use_metadata": config.use_metadata,
+            "config": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(config).items()},
+        }
+        save_checkpoint(initial_checkpoint_payload, last_checkpoint_path)
+        if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
+            shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+        print("[6/8] Saving last checkpoint")
+
+        print("[2/8] Starting validation")
         eval_model = ema.module if ema is not None else raw_model
-        val_metrics = run_validation(
-            eval_model, val_loader, criterion=criterion,
-            device=device, use_metadata=config.use_metadata,
-            use_tta=getattr(config, "use_tta", False),
-        )
-        scheduler.step()
 
+        val_metrics = {
+            "loss": float("nan"),
+            "roc_auc": float("nan"),
+            "pauc": float("nan"),
+            "optimal_threshold": 0.5,
+            "f1_optimal": 0.0,
+        }
+
+        try:
+            val_metrics = run_validation(
+                eval_model, val_loader, criterion=criterion,
+                device=device, use_metadata=config.use_metadata,
+                use_tta=getattr(config, "use_tta", False),
+            )
+            print(f"[3/8] Validation finished | val_loss={val_metrics.get('loss', float('nan')):.4f}")
+
+            roc_val = val_metrics.get("roc_auc", float("nan"))
+            pauc_val = val_metrics.get("pauc", float("nan"))
+
+            if not np.isnan(roc_val):
+                print(f"[4/8] Computing ROC-AUC: {roc_val:.4f}")
+            else:
+                print("[4/8] Computing ROC-AUC: N/A")
+
+            if not np.isnan(pauc_val):
+                print(f"[5/8] Computing pAUC: {pauc_val:.4f}")
+            else:
+                print("[5/8] Computing pAUC: N/A")
+
+            # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
+            if "y_true" in val_metrics and "y_score" in val_metrics:
+                generate_evaluation_artifacts(
+                    val_metrics["y_true"],
+                    val_metrics["y_score"],
+                    output_dir=config.output_dir,
+                    fold_idx=fold_idx,
+                    threshold=val_metrics.get("optimal_threshold", 0.5),
+                )
+        except Exception as val_err:
+            print(f"[WARN] Validation or metric computation failed: {val_err}")
+            print(f"[WARN] Continuing pipeline cleanly without freezing.")
+
+        scheduler.step()
         epoch_time = time.time() - epoch_start
 
         epoch_result = {
             "epoch": epoch,
             "train_loss": train_loss,
-            "val_loss": val_metrics["loss"],
-            "val_roc_auc": val_metrics["roc_auc"],
+            "val_loss": val_metrics.get("loss", float("nan")),
+            "val_roc_auc": val_metrics.get("roc_auc", float("nan")),
             "val_pauc": val_metrics.get("pauc", float("nan")),
             "optimal_threshold": val_metrics.get("optimal_threshold", 0.5),
             "learning_rate": optimizer.param_groups[0]["lr"],
@@ -466,29 +536,19 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         print(
             f"Epoch {epoch:>3d} | "
             f"train_loss={train_loss:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} | "
-            f"roc_auc={val_metrics['roc_auc']:.4f} | "
+            f"val_loss={val_metrics.get('loss', float('nan')):.4f} | "
+            f"roc_auc={val_metrics.get('roc_auc', float('nan')):.4f} | "
             f"pAUC={val_metrics.get('pauc', float('nan')):.4f} | "
             f"opt_thresh={val_metrics.get('optimal_threshold', 0.5):.2f} | "
             f"lr={epoch_result['learning_rate']:.2e} | "
             f"time={epoch_time:.1f}s"
         )
 
-        # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
-        if "y_true" in val_metrics and "y_score" in val_metrics:
-            generate_evaluation_artifacts(
-                val_metrics["y_true"],
-                val_metrics["y_score"],
-                output_dir=config.output_dir,
-                fold_idx=fold_idx,
-                threshold=val_metrics.get("optimal_threshold", 0.5),
-            )
-
-        current_score = val_metrics.get("pauc", val_metrics["roc_auc"])
+        current_score = val_metrics.get("pauc", val_metrics.get("roc_auc", float("-inf")))
         if np.isnan(current_score):
             current_score = float("-inf")
 
-        # Prepare checkpoint payload containing optimizer, scheduler, scaler, EMA, metrics, config
+        # Update Last Checkpoint with full validation metrics
         checkpoint_payload = {
             "epoch": epoch,
             "fold": fold_idx,
@@ -499,7 +559,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
             "ema_state_dict": ema.module.state_dict() if ema is not None else None,
             "best_val_pauc": best_pauc if best_pauc != float("-inf") else current_score,
-            "best_val_auc": best_auc if best_auc != float("-inf") else val_metrics["roc_auc"],
+            "best_val_auc": best_auc if best_auc != float("-inf") else val_metrics.get("roc_auc", float("nan")),
             "val_pauc": val_metrics.get("pauc", float("nan")),
             "val_auc": val_metrics.get("roc_auc", float("nan")),
             "val_loss": val_metrics.get("loss", float("nan")),
@@ -514,33 +574,25 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             "use_metadata": config.use_metadata,
             "config": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(config).items()},
         }
-
-        # 1. Save LAST checkpoint after EVERY epoch
         save_checkpoint(checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
         print("✓ Checkpoint saved")
 
-        # 2. Save BEST checkpoint if current score improves
         if current_score > best_pauc:
             best_pauc = current_score
-            best_auc = val_metrics["roc_auc"]
+            best_auc = val_metrics.get("roc_auc", float("nan"))
             checkpoint_payload["best_val_pauc"] = best_pauc
             checkpoint_payload["best_val_auc"] = best_auc
             save_checkpoint(checkpoint_payload, best_checkpoint_path)
             if best_root_ckpt_path.resolve() != best_checkpoint_path.resolve():
                 shutil.copy2(best_checkpoint_path, best_root_ckpt_path)
-            print(f"  ★ New best pAUC={best_pauc:.4f} — saved to {best_checkpoint_path}")
-            print("✓ Checkpoint saved")
+            print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}")
+            training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
+        else:
+            print("[7/8] Saving best checkpoint (no score improvement)")
 
-        # 3. Update and write training_state.json after every epoch
-        training_state.current_fold = fold_idx
-        training_state.last_epoch = epoch
-        if best_pauc != float("-inf") and not np.isnan(best_pauc):
-            training_state.best_pauc = best_pauc
-        elif current_score != float("-inf") and not np.isnan(current_score):
-            training_state.best_pauc = current_score
-        training_state.save(config.output_dir)
+        print(f"[8/8] Epoch complete (Time: {epoch_time:.1f}s)\n")
 
         if early_stopping(current_score):
             break

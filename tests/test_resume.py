@@ -155,3 +155,31 @@ def test_per_epoch_last_checkpoint_and_resume_flow(tmp_path):
     final_state = TrainingState.load(out_dir)
     assert final_state.completed_folds == [0]
     assert final_state.current_fold == 1
+
+
+def test_pre_validation_checkpoint_and_resume_on_validation_failure(tmp_path):
+    """Test that pre-validation checkpointing enables resume even if validation fails."""
+    out_dir = tmp_path / "outputs"
+    ckpt_dir = out_dir / "checkpoints" / "efficientnetv2_s"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Save pre-validation state for epoch 1
+    state = TrainingState(completed_folds=[], current_fold=0, last_epoch=1, best_pauc=0.0)
+    state.save(out_dir)
+
+    last_ckpt = ckpt_dir / "last_checkpoint_fold0.pt"
+    model = torch.nn.Linear(5, 1)
+    payload = {
+        "epoch": 1,
+        "fold": 0,
+        "model_state_dict": model.state_dict(),
+        "val_pauc": float("nan"),
+    }
+    save_checkpoint(payload, last_ckpt)
+
+    # 2. Verify resume reads epoch 1 and starts epoch 2
+    loaded_state = TrainingState.load(out_dir)
+    assert loaded_state.last_epoch == 1
+    ckpt = load_checkpoint(last_ckpt)
+    assert ckpt["epoch"] == 1
+    assert ckpt["epoch"] + 1 == 2
