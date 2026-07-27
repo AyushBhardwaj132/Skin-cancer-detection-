@@ -23,13 +23,16 @@ class TrainingState:
             else:
                 best_pauc_val = round(best_pauc_val, 4)
 
-        return {
+        res = {
             "completed_folds": sorted(list(set(self.completed_folds))),
             "current_fold": int(self.current_fold),
             "last_epoch": int(self.last_epoch),
-            "last_batch_idx": int(self.last_batch_idx),
             "best_pauc": best_pauc_val,
         }
+        if self.last_batch_idx > 0:
+            res["last_batch_idx"] = int(self.last_batch_idx)
+
+        return res
 
     def update_epoch(self, fold: int, epoch: int, best_pauc: float = 0.0, batch_idx: int = 0) -> None:
         self.current_fold = fold
