@@ -30,9 +30,14 @@ scheduler: CosineAnnealingLR
 scheduler_eta_min: 0.000001
 
 # --- Loss Function ---
-loss_type: focal
+# Options: focal, asymmetric (ASL), polyloss, weighted_bce, bce
+loss_type: asymmetric
 focal_alpha: 0.50
 focal_gamma: 2.0
+asl_gamma_neg: 4.0
+asl_gamma_pos: 1.0
+asl_clip_margin: 0.05
+poly_epsilon: 2.0
 
 # --- Regularization & Cross Validation ---
 n_splits: 5
@@ -42,18 +47,26 @@ max_grad_norm: 1.0
 # --- Augmentation & Regularization ---
 use_advanced_augs: true
 use_mixup: false
+mixup_alpha: 0.4
 use_cutmix: false
+cutmix_alpha: 1.0
+use_lesion_crop: false
 
-# --- Exponential Moving Average (EMA) ---
+# --- Exponential Moving Average (EMA) & TTA ---
 use_ema: true
 ema_decay: 0.999
+use_tta: true
+tta_steps: 4
 
-# --- Kaggle GPU Hardware Acceleration ---
+# --- Multi-GPU & Hardware Acceleration ---
 use_cuda: true
 use_fp16: true
 num_workers: 4
 pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
 cudnn_benchmark: true
+multi_gpu: true
 
 # --- Reproducibility ---
 seed: 42

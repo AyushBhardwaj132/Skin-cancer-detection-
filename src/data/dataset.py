@@ -120,10 +120,16 @@ class ISICDataset(Dataset):
                 h5_file = self._get_h5_file()
                 if h5_file is not None and image_id in h5_file:
                     raw_data = h5_file[image_id][()]
-                    if isinstance(raw_data, np.ndarray):
-                        raw_data = raw_data.tobytes()
-                    image = Image.open(io.BytesIO(raw_data)).convert("RGB")
-                    image_np = np.array(image)
+                    if isinstance(raw_data, bytes):
+                        buf = np.frombuffer(raw_data, dtype=np.uint8)
+                    elif isinstance(raw_data, np.ndarray):
+                        buf = raw_data.astype(np.uint8)
+                    else:
+                        buf = np.frombuffer(bytes(raw_data), dtype=np.uint8)
+
+                    img_bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+                    if img_bgr is not None:
+                        image_np = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             except Exception:
                 image_np = None
 
@@ -131,8 +137,12 @@ class ISICDataset(Dataset):
         if image_np is None:
             try:
                 image_path = resolve_image_path(self.image_dir, image_id)
-                image = Image.open(image_path).convert("RGB")
-                image_np = np.array(image)
+                img_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+                if img_bgr is not None:
+                    image_np = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                else:
+                    image = Image.open(image_path).convert("RGB")
+                    image_np = np.array(image)
             except Exception:
                 # 3. Fallback synthetic array if image is corrupted or missing in test mode
                 image_np = np.zeros((384, 384, 3), dtype=np.uint8)

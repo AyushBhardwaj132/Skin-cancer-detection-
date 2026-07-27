@@ -31,6 +31,7 @@ from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, 
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
+from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 
@@ -126,6 +127,8 @@ def _build_loaders_fold(
         worker_init_fn=seed_worker,
         generator=g,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=(config.num_workers > 0),
+        prefetch_factor=(2 if config.num_workers > 0 else None),
     )
     val_loader = DataLoader(
         val_dataset,
@@ -135,6 +138,8 @@ def _build_loaders_fold(
         worker_init_fn=seed_worker,
         generator=g,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=(config.num_workers > 0),
+        prefetch_factor=(2 if config.num_workers > 0 else None),
     )
     return train_loader, val_loader, metadata_dim
 
@@ -163,9 +168,9 @@ def _train_one_epoch(
 
     pbar = tqdm(dataloader, desc=pbar_desc, leave=False)
     for batch in pbar:
-        images = batch["image"].to(device)
-        metadata = batch["metadata"].to(device) if "metadata" in batch else None
-        labels = batch["target"].to(device).float().unsqueeze(1)
+        images = batch["image"].to(device, non_blocking=True)
+        metadata = batch["metadata"].to(device, non_blocking=True) if "metadata" in batch else None
+        labels = batch["target"].to(device, non_blocking=True).float().unsqueeze(1)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -194,7 +199,8 @@ def _train_one_epoch(
             optimizer.step()
 
         if ema is not None:
-            ema.update(model)
+            raw_model = model.module if hasattr(model, "module") else model
+            ema.update(raw_model)
 
         batch_size = images.size(0)
         running_loss += loss.item() * batch_size
@@ -313,7 +319,8 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         }
 
     device = get_device()
-    print(f"Device: {device}")
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    print(f"Device: {device} | Active GPUs: {gpu_count}")
 
     # --- Build data loaders ---
     print(f"Building data loaders for fold {fold_idx}...")
@@ -333,8 +340,15 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         print(f"Building image-only model: {config.model_name}")
         model = build_model(model_name=config.model_name, pretrained=True, num_classes=1).to(device)
 
+    # Multi-GPU DataParallel wrapping if multiple GPUs are available
+    if gpu_count > 1:
+        print(f"  [MULTI-GPU] Multi-GPU Acceleration Active across {gpu_count} GPUs via DataParallel")
+        model = nn.DataParallel(model)
+
+    raw_model = model.module if hasattr(model, "module") else model
+
     # --- EMA Initialization ---
-    ema = ModelEMA(model, decay=config.ema_decay, device=device) if getattr(config, "use_ema", True) else None
+    ema = ModelEMA(raw_model, decay=config.ema_decay, device=device) if getattr(config, "use_ema", True) else None
 
     # --- Loss, optimizer, scheduler, AMP scaler ---
     criterion = build_loss(
@@ -365,7 +379,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         if target_resume_path and target_resume_path.exists():
             print(f"Resuming training from checkpoint: {target_resume_path}")
             ckpt = load_checkpoint(target_resume_path, map_location=device)
-            model.load_state_dict(ckpt["model_state_dict"])
+            raw_model.load_state_dict(ckpt["model_state_dict"])
             if "optimizer_state_dict" in ckpt:
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             if "scheduler_state_dict" in ckpt:
@@ -399,10 +413,11 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             use_fp16=config.use_fp16,
         )
 
-        eval_model = ema.module if ema is not None else model
+        eval_model = ema.module if ema is not None else raw_model
         val_metrics = run_validation(
             eval_model, val_loader, criterion=criterion,
             device=device, use_metadata=config.use_metadata,
+            use_tta=getattr(config, "use_tta", False),
         )
         scheduler.step()
 
@@ -414,6 +429,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             "val_loss": val_metrics["loss"],
             "val_roc_auc": val_metrics["roc_auc"],
             "val_pauc": val_metrics.get("pauc", float("nan")),
+            "optimal_threshold": val_metrics.get("optimal_threshold", 0.5),
             "learning_rate": optimizer.param_groups[0]["lr"],
             "epoch_time": epoch_time,
         }
@@ -425,9 +441,20 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             f"val_loss={val_metrics['loss']:.4f} | "
             f"roc_auc={val_metrics['roc_auc']:.4f} | "
             f"pAUC={val_metrics.get('pauc', float('nan')):.4f} | "
+            f"opt_thresh={val_metrics.get('optimal_threshold', 0.5):.2f} | "
             f"lr={epoch_result['learning_rate']:.2e} | "
             f"time={epoch_time:.1f}s"
         )
+
+        # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
+        if "y_true" in val_metrics and "y_score" in val_metrics:
+            generate_evaluation_artifacts(
+                val_metrics["y_true"],
+                val_metrics["y_score"],
+                output_dir=config.output_dir,
+                fold_idx=fold_idx,
+                threshold=val_metrics.get("optimal_threshold", 0.5),
+            )
 
         current_score = val_metrics.get("pauc", val_metrics["roc_auc"])
         if np.isnan(current_score):
@@ -438,7 +465,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             "epoch": epoch,
             "fold": fold_idx,
             "model_name": config.backbone_name if config.use_metadata else config.model_name,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": raw_model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -448,10 +475,12 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             "val_pauc": val_metrics.get("pauc", float("nan")),
             "val_auc": val_metrics.get("roc_auc", float("nan")),
             "val_loss": val_metrics.get("loss", float("nan")),
+            "optimal_threshold": val_metrics.get("optimal_threshold", 0.5),
             "metrics": {
                 "val_pauc": val_metrics.get("pauc", float("nan")),
                 "val_auc": val_metrics.get("roc_auc", float("nan")),
                 "val_loss": val_metrics.get("loss", float("nan")),
+                "optimal_threshold": val_metrics.get("optimal_threshold", 0.5),
             },
             "metadata_dim": metadata_dim,
             "use_metadata": config.use_metadata,
