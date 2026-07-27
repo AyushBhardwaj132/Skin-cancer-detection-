@@ -138,6 +138,7 @@ def _build_loaders_fold(
         pin_memory=torch.cuda.is_available(),
         persistent_workers=(config.num_workers > 0),
         prefetch_factor=(2 if config.num_workers > 0 else None),
+        timeout=(120 if config.num_workers > 0 else 0),
     )
     val_loader = DataLoader(
         val_dataset,
@@ -149,6 +150,7 @@ def _build_loaders_fold(
         pin_memory=torch.cuda.is_available(),
         persistent_workers=(config.num_workers > 0),
         prefetch_factor=(2 if config.num_workers > 0 else None),
+        timeout=(120 if config.num_workers > 0 else 0),
     )
     return train_loader, val_loader, metadata_dim
 

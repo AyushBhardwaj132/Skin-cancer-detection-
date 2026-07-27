@@ -103,13 +103,22 @@ class ISICDataset(Dataset):
         return None
 
     def _get_h5_file(self):
-        """Lazy worker-safe h5py File handle retrieval."""
+        """Worker-process PID-isolated h5py File handle retrieval to prevent PyTorch fork deadlocks."""
+        current_pid = os.getpid()
+        if getattr(self, "_h5_pid", None) != current_pid:
+            self._h5_pid = current_pid
+            self._h5_file = None
+
         if self._h5_file is None and self.hdf5_path is not None:
             try:
                 import h5py
-                self._h5_file = h5py.File(str(self.hdf5_path), "r")
+                self._h5_file = h5py.File(str(self.hdf5_path), "r", libver="latest", swmr=True)
             except Exception:
-                self._h5_file = None
+                try:
+                    import h5py
+                    self._h5_file = h5py.File(str(self.hdf5_path), "r")
+                except Exception:
+                    self._h5_file = None
         return self._h5_file
 
     def __len__(self) -> int:
