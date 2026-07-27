@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 import argparse
 from dataclasses import asdict, is_dataclass
@@ -46,6 +47,8 @@ def _compute_class_weights(targets: np.ndarray) -> torch.Tensor:
 def _build_loaders_fold(
     config: Config,
     fold_idx: int = 0,
+    limit_train: int | None = None,
+    limit_val: int | None = None,
 ) -> tuple[DataLoader, DataLoader, int]:
     """Build data loaders using GroupKFold split with optional metadata.
 
@@ -60,6 +63,11 @@ def _build_loaders_fold(
         fold_idx=fold_idx,
         n_splits=config.n_splits,
     )
+
+    if limit_train is not None and limit_train > 0:
+        train_df = train_df.iloc[:limit_train].reset_index(drop=True)
+    if limit_val is not None and limit_val > 0:
+        val_df = val_df.iloc[:limit_val].reset_index(drop=True)
 
     # --- Phase 3: Metadata processing ---
     metadata_dim = 1  # fallback when metadata is disabled
@@ -321,7 +329,13 @@ def plot_training_curves(history: list[dict], save_path: Path):
     print(f"  Training curves plot saved to {save_path}")
 
 
-def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False):
+def train(
+    config: Config | None = None,
+    fold_idx: int = 0,
+    resume: bool = False,
+    limit_train: int | None = None,
+    limit_val: int | None = None,
+):
     """Full Competition Training pipeline supporting Mixed Precision, EMA, GroupKFold, and Checkpoint Resuming."""
     config = config or Config()
     seed_everything(config.seed)
@@ -362,7 +376,9 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
 
     # --- Build data loaders ---
     print(f"Building data loaders for fold {fold_idx}...")
-    train_loader, val_loader, metadata_dim = _build_loaders_fold(config, fold_idx=fold_idx)
+    train_loader, val_loader, metadata_dim = _build_loaders_fold(
+        config, fold_idx=fold_idx, limit_train=limit_train, limit_val=limit_val
+    )
 
     # --- Build model ---
     if config.use_metadata:

@@ -236,3 +236,23 @@ def test_save_intra_epoch_checkpoint_invoked_during_training(tmp_path):
     assert invoked_batches == [2, 4, 6]
     assert last_ckpt.exists()
     assert (out_dir / "training_state.json").exists()
+
+
+def test_smoke_test_generates_required_checkpoint_and_state_files(tmp_path):
+    """Verify that train() under smoke_test conditions generates training_state.json and last_checkpoint_fold0.pt."""
+    from src.train import train
+
+    config = Config.from_yaml("configs/kaggle_config.yaml")
+    config.output_dir = tmp_path / "outputs"
+    config.num_epochs = 1
+    config.num_workers = 0
+    config.checkpoint_batch_interval = 2
+    config.use_metadata = False
+
+    train(config, fold_idx=0, limit_train=10, limit_val=10)
+
+    state_file = config.output_dir / "training_state.json"
+    root_last_ckpt = config.checkpoint_dir / "last_checkpoint_fold0.pt"
+
+    assert state_file.exists(), f"Missing {state_file}"
+    assert root_last_ckpt.exists(), f"Missing {root_last_ckpt}"
