@@ -29,6 +29,7 @@ from src.patient_features import enrich_metadata
 from src.split import get_fold_dataframes
 from src.transforms import build_transforms, mixup_data, cutmix_data
 from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker
+from src.utils.hardware import get_hardware_info
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
