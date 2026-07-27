@@ -61,6 +61,7 @@ tta_steps: 4
 # --- Multi-GPU & Hardware Acceleration ---
 # multi_gpu_mode options: auto (default), single, dataparallel, ddp
 multi_gpu_mode: auto
+checkpoint_batch_interval: 500
 use_cuda: true
 use_fp16: true
 num_workers: 4

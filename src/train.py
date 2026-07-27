@@ -160,8 +160,10 @@ def _train_one_epoch(
     use_cutmix: bool = False,
     cutmix_alpha: float = 1.0,
     use_fp16: bool = True,
+    checkpoint_batch_interval: int = 500,
+    checkpoint_callback: callable | None = None,
 ):
-    """Train for one epoch with progress bar, AMP, EMA, and optional MixUp/CutMix."""
+    """Train for one epoch with progress bar, AMP, EMA, optional MixUp/CutMix, and intra-epoch batch checkpointing."""
     model.train()
     running_loss = 0.0
     running_samples = 0
@@ -231,6 +233,9 @@ def _train_one_epoch(
             bwd_time=bwd_time,
             batch_size=batch_size,
         )
+
+        if checkpoint_callback is not None and checkpoint_batch_interval > 0 and batch_idx % checkpoint_batch_interval == 0:
+            checkpoint_callback(batch_idx, len(dataloader))
 
     return running_loss / max(running_samples, 1)
 
@@ -429,6 +434,36 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
     for epoch in range(start_epoch, config.num_epochs + 1):
         epoch_start = time.time()
 
+        def save_intra_epoch_checkpoint(b_idx: int, total_b: int):
+            training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc, batch_idx=b_idx)
+            training_state.save(config.output_dir)
+
+            intra_payload = {
+                "epoch": epoch,
+                "batch_idx": b_idx,
+                "total_batches": total_b,
+                "fold": fold_idx,
+                "model_name": config.backbone_name if config.use_metadata else config.model_name,
+                "model_state_dict": raw_model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+                "ema_state_dict": ema.module.state_dict() if ema is not None else None,
+                "best_val_pauc": best_pauc if best_pauc != float("-inf") else 0.0,
+                "best_val_auc": best_auc if best_auc != float("-inf") else 0.0,
+                "val_pauc": float("nan"),
+                "val_auc": float("nan"),
+                "val_loss": float("nan"),
+                "metadata_dim": metadata_dim,
+                "use_metadata": config.use_metadata,
+                "config": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(config).items()},
+            }
+            save_checkpoint(intra_payload, last_checkpoint_path)
+            if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
+                shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+            print(f"✓ Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
+            sys.stdout.flush()
+
         train_loss = _train_one_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
             ema=ema,
@@ -439,16 +474,20 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             use_cutmix=config.use_cutmix,
             cutmix_alpha=config.cutmix_alpha,
             use_fp16=config.use_fp16,
+            checkpoint_batch_interval=getattr(config, "checkpoint_batch_interval", 500),
+            checkpoint_callback=save_intra_epoch_checkpoint,
         )
-        print(f"\n[1/8] Training finished | train_loss={train_loss:.4f}")
+        print(f"\n[1/8] Training finished | train_loss={train_loss:.4f}", flush=True)
+        sys.stdout.flush()
 
         # Save LAST checkpoint & update training_state.json IMMEDIATELY after training (BEFORE validation)
         training_state.current_fold = fold_idx
         training_state.last_epoch = epoch
+        training_state.last_batch_idx = 0
         if best_pauc != float("-inf") and not np.isnan(best_pauc):
             training_state.best_pauc = best_pauc
         training_state.save(config.output_dir)
-        print("✓ Resume information saved")
+        print("✓ Resume information saved", flush=True)
 
         initial_checkpoint_payload = {
             "epoch": epoch,
@@ -471,9 +510,11 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         save_checkpoint(initial_checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
-        print("[6/8] Saving last checkpoint")
+        print("[6/8] Saving last checkpoint", flush=True)
+        sys.stdout.flush()
 
-        print("[2/8] Starting validation")
+        print("[2/8] Starting validation", flush=True)
+        sys.stdout.flush()
         eval_model = ema.module if ema is not None else raw_model
 
         val_metrics = {
@@ -490,20 +531,20 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
                 device=device, use_metadata=config.use_metadata,
                 use_tta=getattr(config, "use_tta", False),
             )
-            print(f"[3/8] Validation finished | val_loss={val_metrics.get('loss', float('nan')):.4f}")
+            print(f"[3/8] Validation finished | val_loss={val_metrics.get('loss', float('nan')):.4f}", flush=True)
 
             roc_val = val_metrics.get("roc_auc", float("nan"))
             pauc_val = val_metrics.get("pauc", float("nan"))
 
             if not np.isnan(roc_val):
-                print(f"[4/8] Computing ROC-AUC: {roc_val:.4f}")
+                print(f"[4/8] Computing ROC-AUC: {roc_val:.4f}", flush=True)
             else:
-                print("[4/8] Computing ROC-AUC: N/A")
+                print("[4/8] Computing ROC-AUC: N/A", flush=True)
 
             if not np.isnan(pauc_val):
-                print(f"[5/8] Computing pAUC: {pauc_val:.4f}")
+                print(f"[5/8] Computing pAUC: {pauc_val:.4f}", flush=True)
             else:
-                print("[5/8] Computing pAUC: N/A")
+                print("[5/8] Computing pAUC: N/A", flush=True)
 
             # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
             if "y_true" in val_metrics and "y_score" in val_metrics:
@@ -515,9 +556,10 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
                     threshold=val_metrics.get("optimal_threshold", 0.5),
                 )
         except Exception as val_err:
-            print(f"[WARN] Validation or metric computation failed: {val_err}")
-            print(f"[WARN] Continuing pipeline cleanly without freezing.")
+            print(f"[WARN] Validation or metric computation failed: {val_err}", flush=True)
+            print(f"[WARN] Continuing pipeline cleanly without freezing.", flush=True)
 
+        sys.stdout.flush()
         scheduler.step()
         epoch_time = time.time() - epoch_start
 
@@ -541,7 +583,8 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             f"pAUC={val_metrics.get('pauc', float('nan')):.4f} | "
             f"opt_thresh={val_metrics.get('optimal_threshold', 0.5):.2f} | "
             f"lr={epoch_result['learning_rate']:.2e} | "
-            f"time={epoch_time:.1f}s"
+            f"time={epoch_time:.1f}s",
+            flush=True,
         )
 
         current_score = val_metrics.get("pauc", val_metrics.get("roc_auc", float("-inf")))
@@ -577,7 +620,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         save_checkpoint(checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
-        print("✓ Checkpoint saved")
+        print("✓ Checkpoint saved", flush=True)
 
         if current_score > best_pauc:
             best_pauc = current_score
@@ -587,12 +630,13 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             save_checkpoint(checkpoint_payload, best_checkpoint_path)
             if best_root_ckpt_path.resolve() != best_checkpoint_path.resolve():
                 shutil.copy2(best_checkpoint_path, best_root_ckpt_path)
-            print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}")
+            print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}", flush=True)
             training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
         else:
-            print("[7/8] Saving best checkpoint (no score improvement)")
+            print("[7/8] Saving best checkpoint (no score improvement)", flush=True)
 
-        print(f"[8/8] Epoch complete (Time: {epoch_time:.1f}s)\n")
+        print(f"[8/8] Epoch complete (Time: {epoch_time:.1f}s)\n", flush=True)
+        sys.stdout.flush()
 
         if early_stopping(current_score):
             break

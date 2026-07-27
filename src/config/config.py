@@ -97,6 +97,7 @@ class Config:
     pseudo_pos_thresh: float = 0.99
     pseudo_neg_thresh: float = 0.01
     multi_gpu_mode: str = "auto"  # auto, single, dataparallel, ddp
+    checkpoint_batch_interval: int = 500
     use_fp16: bool = True
     use_ema: bool = True
     ema_decay: float = 0.999
