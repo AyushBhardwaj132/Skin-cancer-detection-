@@ -117,8 +117,8 @@ class ISICDataset(Dataset):
                 try:
                     import h5py
                     self._h5_file = h5py.File(str(self.hdf5_path), "r")
-                except Exception:
-                    self._h5_file = None
+                except Exception as e:
+                    raise RuntimeError(f"[FAIL FAST] Unable to open HDF5 file at {self.hdf5_path}: {e}")
         return self._h5_file
 
     def __len__(self) -> int:

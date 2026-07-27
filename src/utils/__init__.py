@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import random
 import os
 from pathlib import Path
@@ -66,19 +67,23 @@ def resolve_image_path(image_dir: str | Path, image_id: str) -> Path:
 def save_checkpoint(state: dict, path: str | Path) -> Path:
     path = Path(path).resolve()
     ensure_dir(path.parent)
-    torch.save(state, path)
+    try:
+        torch.save(state, path)
+    except Exception as e:
+        raise RuntimeError(f"[FAIL FAST] Failed to save checkpoint to {path}: {e}")
 
     if not path.exists():
-        raise FileNotFoundError(f"[CRITICAL CHECKPOINT ERROR] File was not created at: {path}")
+        raise RuntimeError(f"[FAIL FAST] Checkpoint file was not created at: {path}")
 
     size_bytes = path.stat().st_size
     if size_bytes == 0:
-        raise RuntimeError(f"[CRITICAL CHECKPOINT ERROR] Checkpoint file exists but is 0 bytes at: {path}")
+        raise RuntimeError(f"[FAIL FAST] Checkpoint file exists but is 0 bytes at: {path}")
 
     size_mb = size_bytes / (1024 * 1024)
-    print(f"\n[SAVE]", flush=True)
-    print(f"File:\n{path}", flush=True)
-    print(f"Exists: YES", flush=True)
+    print("\n[SAVE VERIFIED]", flush=True)
+    print("File:", flush=True)
+    print(f"{path}", flush=True)
+    print("Exists: YES", flush=True)
     print(f"Size: {size_mb:.1f} MB\n", flush=True)
     sys.stdout.flush()
 

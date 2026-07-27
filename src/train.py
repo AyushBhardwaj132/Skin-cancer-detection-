@@ -520,39 +520,66 @@ def resolve_resume_fold(
     return requested_fold, training_state
 
 
-def print_present_checkpoints(checkpoint_dir: Path):
-    """Prints all checkpoint (.pt, .json) files currently present in checkpoint directory and output tree."""
+def verify_checkpoint_dir_writable(checkpoint_dir: Path) -> bool:
     checkpoint_dir = Path(checkpoint_dir).resolve()
-    print(f"\n[CHECKPOINTS PRESENT IN {checkpoint_dir}]", flush=True)
-    if not checkpoint_dir.exists():
-        print("  (Directory does not exist yet)", flush=True)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    test_file = checkpoint_dir / "checkpoint_test.tmp"
+    try:
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write("test_checkpoint_dir_writable")
+        if not test_file.exists():
+            raise RuntimeError(f"[FAIL FAST] Test file was not created: {test_file}")
+        test_file.unlink()
+        print("Checkpoint directory writable: YES", flush=True)
         sys.stdout.flush()
-        return
+        return True
+    except Exception as e:
+        print(f"Checkpoint directory writable: NO ({e})", flush=True)
+        sys.stdout.flush()
+        raise RuntimeError(f"[FAIL FAST] Checkpoint directory {checkpoint_dir} is not writable: {e}")
 
-    parent_dir = checkpoint_dir.parent
-    search_dirs = [checkpoint_dir]
-    if parent_dir.exists() and parent_dir != checkpoint_dir:
-        search_dirs.append(parent_dir)
 
+def print_startup_report(config: Config, fold_idx: int, resume: bool):
+    hw = get_hardware_info()
+    print("=" * 80, flush=True)
+    print("STARTUP REPORT", flush=True)
+    print("=" * 80, flush=True)
+    print(f"Repository root:      {PROJECT_ROOT}", flush=True)
+    print(f"Output directory:     {config.output_dir.resolve()}", flush=True)
+    print(f"Checkpoint directory: {config.checkpoint_dir.resolve()}", flush=True)
+    print(f"GPU:                  {hw['device_name']}", flush=True)
+    print(f"CUDA:                 {hw['is_cuda']}", flush=True)
+    print(f"AMP:                  {config.use_fp16}", flush=True)
+    print(f"Batch size:           {config.batch_size}", flush=True)
+    print(f"Workers:              {config.num_workers}", flush=True)
+    print(f"Persistent workers:   {config.num_workers > 0}", flush=True)
+    print(f"Pin memory:           {torch.cuda.is_available()}", flush=True)
+    print(f"Prefetch factor:      {2 if config.num_workers > 0 else None}", flush=True)
+    print(f"Resume enabled:       {resume}", flush=True)
+    print("=" * 80 + "\n", flush=True)
+    sys.stdout.flush()
+
+
+def list_current_checkpoints(checkpoint_dir: Path, output_dir: Path):
+    """Every epoch print every checkpoint currently present."""
+    print("Current checkpoints:\n", flush=True)
     found_files = []
     seen = set()
-    for d in search_dirs:
-        for ext in ["*.pt", "*.json"]:
-            for f in d.rglob(ext):
-                abs_f = f.resolve()
-                if abs_f not in seen and abs_f.is_file():
-                    seen.add(abs_f)
-                    found_files.append(abs_f)
+
+    for d in [checkpoint_dir.resolve(), output_dir.resolve()]:
+        if d.exists():
+            for f in d.rglob("*"):
+                if f.is_file() and f.name not in seen and (f.suffix in [".pt", ".json"] or f.name == "training_state.json"):
+                    seen.add(f.name)
+                    found_files.append(f.name)
 
     found_files = sorted(found_files)
     if not found_files:
-        print("  (No checkpoint files present yet)", flush=True)
+        print("- (None)", flush=True)
     else:
-        for f in found_files:
-            size_mb = f.stat().st_size / (1024 * 1024)
-            size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{f.stat().st_size} bytes"
-            print(f"  - {f} ({size_str})", flush=True)
-    print("=" * 80 + "\n", flush=True)
+        for fname in found_files:
+            print(f"- {fname}", flush=True)
+    print("", flush=True)
     sys.stdout.flush()
 
 
@@ -567,15 +594,23 @@ def train(
     config = config or Config()
     seed_everything(config.seed)
 
-    ensure_dir(config.checkpoint_dir)
+    # 8. Startup Report
+    print_startup_report(config, fold_idx, resume)
+
+    # 1 & 9. Checkpoint Directory & Early Self Test
+    os.makedirs(config.checkpoint_dir, exist_ok=True)
     ensure_dir(config.output_dir)
     ensure_dir(config.log_dir)
     ensure_dir(config.prediction_dir)
     ensure_dir(config.figures_dir)
 
-    print(f"\nCheckpoint directory:\n{config.checkpoint_dir.resolve()}\n", flush=True)
+    print("=" * 49, flush=True)
+    print("Checkpoint Directory:", flush=True)
+    print(f"{config.checkpoint_dir.resolve()}", flush=True)
+    print("=" * 49 + "\n", flush=True)
     sys.stdout.flush()
-    print_present_checkpoints(config.checkpoint_dir)
+
+    verify_checkpoint_dir_writable(config.checkpoint_dir)
 
     bb_dir = config.get_backbone_checkpoint_dir(config.backbone_name if config.use_metadata else config.model_name)
     best_checkpoint_path = bb_dir / f"best_model_fold{fold_idx}.pt"
@@ -587,17 +622,39 @@ def train(
     # --- Load Training State ---
     training_state = TrainingState.load(config.output_dir)
 
+    # 4. Verify Resume
     if resume:
-        print(f"[RESUME] Loaded training_state.json", flush=True)
-        print(f"[RESUME] completed_folds = {training_state.completed_folds}", flush=True)
-        print(f"[RESUME] current_fold = {training_state.current_fold}", flush=True)
+        target_resume_path = None
+        for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
+            if candidate.exists() and candidate.stat().st_size > 0:
+                target_resume_path = candidate
+                break
 
-        next_fold = training_state.current_fold
-        while next_fold in training_state.completed_folds and next_fold < config.n_splits:
-            next_fold += 1
+        state_file = config.output_dir / "training_state.json"
+        if target_resume_path and target_resume_path.exists():
+            ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
+            ckpt = load_checkpoint(target_resume_path, map_location=get_device())
+            res_epoch = ckpt.get("epoch", 0)
+            res_batch = ckpt.get("batch_idx", 0)
+            res_fold = ckpt.get("fold", fold_idx)
 
-        print(f"[RESUME] Next fold to execute = {next_fold}", flush=True)
-        sys.stdout.flush()
+            print("=" * 49, flush=True)
+            print("[RESUME VERIFIED]", flush=True)
+            print(f"Resume directory:            {config.output_dir.resolve()}", flush=True)
+            print(f"Checkpoint found:            {target_resume_path.resolve()}", flush=True)
+            print(f"Checkpoint size:             {ckpt_size_mb:.1f} MB", flush=True)
+            print(f"Epoch:                       {res_epoch}", flush=True)
+            print(f"Fold:                        {res_fold}", flush=True)
+            print(f"Batch:                       {res_batch}", flush=True)
+            print(f"training_state.json loaded:  {'YES' if state_file.exists() else 'NO'}", flush=True)
+            print("=" * 49 + "\n", flush=True)
+            sys.stdout.flush()
+        else:
+            print("=" * 49, flush=True)
+            print("No checkpoint found.", flush=True)
+            print("Starting from scratch.", flush=True)
+            print("=" * 49 + "\n", flush=True)
+            sys.stdout.flush()
 
         if fold_idx in training_state.completed_folds:
             print(f"[RESUME] Skipping Fold {fold_idx} (already completed in training_state.json)", flush=True)
@@ -912,7 +969,7 @@ def train(
             print("[7/8] Saving best checkpoint (no score improvement)", flush=True)
 
         print(f"[8/8] Epoch complete (Time: {epoch_time:.1f}s)\n", flush=True)
-        print_present_checkpoints(config.checkpoint_dir)
+        list_current_checkpoints(config.checkpoint_dir, config.output_dir)
         sys.stdout.flush()
 
         if early_stopping(current_score):
