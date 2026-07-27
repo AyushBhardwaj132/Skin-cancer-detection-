@@ -511,7 +511,7 @@ def train(
         if best_pauc != float("-inf") and not np.isnan(best_pauc):
             training_state.best_pauc = best_pauc
         training_state.save(config.output_dir)
-        print("✓ Resume information saved", flush=True)
+        print("[OK] Resume information saved", flush=True)
 
         initial_checkpoint_payload = {
             "epoch": epoch,
