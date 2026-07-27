@@ -69,6 +69,6 @@ class TrainingState:
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=4)
 
-        print("✓ Resume information saved", flush=True)
+        print("[OK] Resume information saved", flush=True)
         sys.stdout.flush()
         return state_path
