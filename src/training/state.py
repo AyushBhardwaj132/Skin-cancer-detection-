@@ -62,13 +62,25 @@ class TrainingState:
             return cls()
 
     def save(self, output_dir: str | Path) -> Path:
-        output_path = Path(output_dir)
+        output_path = Path(output_dir).resolve()
         output_path.mkdir(parents=True, exist_ok=True)
         state_path = output_path / "training_state.json"
 
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=4)
 
-        print("[OK] Resume information saved", flush=True)
+        if not state_path.exists():
+            raise FileNotFoundError(f"[CRITICAL CHECKPOINT ERROR] File was not created at: {state_path}")
+
+        size_bytes = state_path.stat().st_size
+        if size_bytes == 0:
+            raise RuntimeError(f"[CRITICAL CHECKPOINT ERROR] training_state.json exists but is 0 bytes at: {state_path}")
+
+        size_mb = size_bytes / (1024 * 1024)
+        size_str = f"{size_mb:.2f} MB" if size_mb >= 1.0 else f"{size_bytes} bytes"
+        print(f"\n[SAVE]", flush=True)
+        print(f"File:\n{state_path}", flush=True)
+        print(f"Exists: YES", flush=True)
+        print(f"Size: {size_str}\n", flush=True)
         sys.stdout.flush()
         return state_path

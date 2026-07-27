@@ -520,6 +520,42 @@ def resolve_resume_fold(
     return requested_fold, training_state
 
 
+def print_present_checkpoints(checkpoint_dir: Path):
+    """Prints all checkpoint (.pt, .json) files currently present in checkpoint directory and output tree."""
+    checkpoint_dir = Path(checkpoint_dir).resolve()
+    print(f"\n[CHECKPOINTS PRESENT IN {checkpoint_dir}]", flush=True)
+    if not checkpoint_dir.exists():
+        print("  (Directory does not exist yet)", flush=True)
+        sys.stdout.flush()
+        return
+
+    parent_dir = checkpoint_dir.parent
+    search_dirs = [checkpoint_dir]
+    if parent_dir.exists() and parent_dir != checkpoint_dir:
+        search_dirs.append(parent_dir)
+
+    found_files = []
+    seen = set()
+    for d in search_dirs:
+        for ext in ["*.pt", "*.json"]:
+            for f in d.rglob(ext):
+                abs_f = f.resolve()
+                if abs_f not in seen and abs_f.is_file():
+                    seen.add(abs_f)
+                    found_files.append(abs_f)
+
+    found_files = sorted(found_files)
+    if not found_files:
+        print("  (No checkpoint files present yet)", flush=True)
+    else:
+        for f in found_files:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{f.stat().st_size} bytes"
+            print(f"  - {f} ({size_str})", flush=True)
+    print("=" * 80 + "\n", flush=True)
+    sys.stdout.flush()
+
+
 def train(
     config: Config | None = None,
     fold_idx: int = 0,
@@ -532,9 +568,14 @@ def train(
     seed_everything(config.seed)
 
     ensure_dir(config.checkpoint_dir)
+    ensure_dir(config.output_dir)
     ensure_dir(config.log_dir)
     ensure_dir(config.prediction_dir)
     ensure_dir(config.figures_dir)
+
+    print(f"\nCheckpoint directory:\n{config.checkpoint_dir.resolve()}\n", flush=True)
+    sys.stdout.flush()
+    print_present_checkpoints(config.checkpoint_dir)
 
     bb_dir = config.get_backbone_checkpoint_dir(config.backbone_name if config.use_metadata else config.model_name)
     best_checkpoint_path = bb_dir / f"best_model_fold{fold_idx}.pt"
@@ -871,6 +912,7 @@ def train(
             print("[7/8] Saving best checkpoint (no score improvement)", flush=True)
 
         print(f"[8/8] Epoch complete (Time: {epoch_time:.1f}s)\n", flush=True)
+        print_present_checkpoints(config.checkpoint_dir)
         sys.stdout.flush()
 
         if early_stopping(current_score):
