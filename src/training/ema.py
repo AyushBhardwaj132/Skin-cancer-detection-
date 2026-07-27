@@ -6,10 +6,9 @@ import torch.nn as nn
 
 
 class ModelEMA:
-    """Exponential Moving Average (EMA) of model weights for enhanced validation performance & generalization."""
+    """Exponential Moving Average (EMA) of model weights with zero-allocation in-place tensor updates."""
     def __init__(self, model: nn.Module, decay: float = 0.999, device: str | torch.device | None = None):
-        self.module = copy.deepcopy(model)
-        self.module.eval()
+        self.module = copy.deepcopy(model).eval()
         self.decay = decay
         self.device = device
         if self.device:
@@ -20,9 +19,9 @@ class ModelEMA:
 
     def update(self, model: nn.Module) -> None:
         with torch.no_grad():
-            msd = model.state_dict()
-            for k, v in self.module.state_dict().items():
-                if v.dtype.is_floating_point:
-                    v.copy_(v * self.decay + msd[k].to(v.device) * (1.0 - self.decay))
-                else:
-                    v.copy_(msd[k].to(v.device))
+            for ema_param, model_param in zip(self.module.parameters(), model.parameters()):
+                if ema_param.dtype.is_floating_point:
+                    ema_param.mul_(self.decay).add_(model_param.detach(), alpha=1.0 - self.decay)
+
+            for ema_buf, model_buf in zip(self.module.buffers(), model.buffers()):
+                ema_buf.copy_(model_buf.detach())

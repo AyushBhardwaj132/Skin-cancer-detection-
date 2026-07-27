@@ -65,6 +65,12 @@ class ISICDataset(Dataset):
         self.image_id_col = image_id_col
         self.use_lesion_crop = use_lesion_crop
 
+        self.image_ids = self.df[self.image_id_col].astype(str).values
+        if not self.is_test and self.target_col in self.df.columns:
+            self.targets = self.df[self.target_col].values.astype(np.float32)
+        else:
+            self.targets = None
+
         # --- HDF5 Auto Detection ---
         self.hdf5_path = self._detect_hdf5_path(self.image_dir)
         self._h5_file = None
@@ -107,11 +113,10 @@ class ISICDataset(Dataset):
         return self._h5_file
 
     def __len__(self) -> int:
-        return len(self.df)
+        return len(self.image_ids)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
-        row = self.df.iloc[idx]
-        image_id = str(row[self.image_id_col])
+        image_id = self.image_ids[idx]
         image_np = None
 
         # 1. Try reading from HDF5 dataset if available
@@ -164,7 +169,7 @@ class ISICDataset(Dataset):
         if self.metadata_tensor is not None:
             sample["metadata"] = self.metadata_tensor[idx]
 
-        if not self.is_test and self.target_col in row:
-            sample["target"] = torch.tensor(row[self.target_col], dtype=torch.float32)
+        if self.targets is not None:
+            sample["target"] = torch.tensor(self.targets[idx], dtype=torch.float32)
 
         return sample
