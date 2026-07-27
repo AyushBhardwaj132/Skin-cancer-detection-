@@ -31,6 +31,7 @@ from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, 
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
+from src.training.hardware import setup_accelerated_model
 from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
@@ -335,15 +336,14 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             pretrained=True,
             metadata_hidden=config.metadata_mlp_hidden,
             metadata_output=config.metadata_mlp_output,
-        ).to(device)
+        )
     else:
         print(f"Building image-only model: {config.model_name}")
-        model = build_model(model_name=config.model_name, pretrained=True, num_classes=1).to(device)
+        model = build_model(model_name=config.model_name, pretrained=True, num_classes=1)
 
-    # Multi-GPU DataParallel wrapping if multiple GPUs are available
-    if gpu_count > 1:
-        print(f"  [MULTI-GPU] Multi-GPU Acceleration Active across {gpu_count} GPUs via DataParallel")
-        model = nn.DataParallel(model)
+    # Multi-GPU DDP setup or DataParallel vs Single GPU benchmark with automatic fallback
+    sample_batch = next(iter(train_loader)) if len(train_loader) > 0 else None
+    model, accel_metrics = setup_accelerated_model(model, device, sample_batch=sample_batch)
 
     raw_model = model.module if hasattr(model, "module") else model
 
