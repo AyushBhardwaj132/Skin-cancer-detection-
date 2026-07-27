@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import shutil
 from src.config import Config
 from src.dataset import ISICDataset
 from src.fusion_model import FusionModel
@@ -29,6 +30,7 @@ from src.transforms import build_transforms, mixup_data, cutmix_data
 from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
+from src.training.state import TrainingState
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 
@@ -285,6 +287,31 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
     ensure_dir(config.prediction_dir)
     ensure_dir(config.figures_dir)
 
+    bb_dir = config.get_backbone_checkpoint_dir(config.backbone_name if config.use_metadata else config.model_name)
+    best_checkpoint_path = bb_dir / f"best_model_fold{fold_idx}.pt"
+    best_root_ckpt_path = config.checkpoint_dir / f"best_model_fold{fold_idx}.pt"
+
+    last_checkpoint_path = bb_dir / f"last_checkpoint_fold{fold_idx}.pt"
+    last_root_ckpt_path = config.checkpoint_dir / f"last_checkpoint_fold{fold_idx}.pt"
+
+    # --- Load Training State ---
+    training_state = TrainingState.load(config.output_dir)
+
+    if resume and fold_idx in training_state.completed_folds:
+        print(f"Skipping Fold {fold_idx} (already completed in training_state.json)")
+        target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else None)
+        return {
+            "history": [],
+            "best_checkpoint": str(target_eval_ckpt) if target_eval_ckpt else "",
+            "best_val_pauc": training_state.best_pauc,
+            "best_val_auc": 0.0,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "metadata_dim": 0,
+        }
+
     device = get_device()
     print(f"Device: {device}")
 
@@ -327,14 +354,14 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
     best_auc = float("-inf")
     history: list[dict] = []
 
-    # Checkpoint path definition
-    bb_dir = config.get_backbone_checkpoint_dir(config.backbone_name if config.use_metadata else config.model_name)
-    checkpoint_path = bb_dir / f"best_model_fold{fold_idx}.pt"
-    root_ckpt_path = config.checkpoint_dir / f"best_model_fold{fold_idx}.pt"
-
     # --- Resume Training Support ---
     if resume:
-        target_resume_path = checkpoint_path if checkpoint_path.exists() else (root_ckpt_path if root_ckpt_path.exists() else None)
+        target_resume_path = None
+        for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
+            if candidate.exists():
+                target_resume_path = candidate
+                break
+
         if target_resume_path and target_resume_path.exists():
             print(f"Resuming training from checkpoint: {target_resume_path}")
             ckpt = load_checkpoint(target_resume_path, map_location=device)
@@ -343,14 +370,14 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
                 optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             if "scheduler_state_dict" in ckpt:
                 scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-            if "scaler_state_dict" in ckpt and scaler is not None:
+            if "scaler_state_dict" in ckpt and scaler is not None and ckpt.get("scaler_state_dict") is not None:
                 scaler.load_state_dict(ckpt["scaler_state_dict"])
-            if "ema_state_dict" in ckpt and ema is not None:
+            if "ema_state_dict" in ckpt and ema is not None and ckpt.get("ema_state_dict") is not None:
                 ema.module.load_state_dict(ckpt["ema_state_dict"])
             
             start_epoch = ckpt.get("epoch", 0) + 1
-            best_pauc = ckpt.get("best_val_pauc", float("-inf"))
-            best_auc = ckpt.get("best_val_auc", float("-inf"))
+            best_pauc = ckpt.get("best_val_pauc", ckpt.get("val_pauc", float("-inf")))
+            best_auc = ckpt.get("best_val_auc", ckpt.get("val_auc", float("-inf")))
             print(f"  Resumed at epoch {start_epoch} (Previous Best pAUC={best_pauc:.4f})")
 
     print(f"\nTraining fold {fold_idx} for epochs {start_epoch} to {config.num_epochs}...")
@@ -406,35 +433,68 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
         if np.isnan(current_score):
             current_score = float("-inf")
 
+        # Prepare checkpoint payload containing optimizer, scheduler, scaler, EMA, metrics, config
+        checkpoint_payload = {
+            "epoch": epoch,
+            "fold": fold_idx,
+            "model_name": config.backbone_name if config.use_metadata else config.model_name,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+            "ema_state_dict": ema.module.state_dict() if ema is not None else None,
+            "best_val_pauc": best_pauc if best_pauc != float("-inf") else current_score,
+            "best_val_auc": best_auc if best_auc != float("-inf") else val_metrics["roc_auc"],
+            "val_pauc": val_metrics.get("pauc", float("nan")),
+            "val_auc": val_metrics.get("roc_auc", float("nan")),
+            "val_loss": val_metrics.get("loss", float("nan")),
+            "metrics": {
+                "val_pauc": val_metrics.get("pauc", float("nan")),
+                "val_auc": val_metrics.get("roc_auc", float("nan")),
+                "val_loss": val_metrics.get("loss", float("nan")),
+            },
+            "metadata_dim": metadata_dim,
+            "use_metadata": config.use_metadata,
+            "config": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(config).items()},
+        }
+
+        # 1. Save LAST checkpoint after EVERY epoch
+        save_checkpoint(checkpoint_payload, last_checkpoint_path)
+        if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
+            shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+        print("✓ Checkpoint saved")
+
+        # 2. Save BEST checkpoint if current score improves
         if current_score > best_pauc:
             best_pauc = current_score
             best_auc = val_metrics["roc_auc"]
-            
-            checkpoint_payload = {
-                "epoch": epoch,
-                "fold": fold_idx,
-                "model_name": config.backbone_name if config.use_metadata else config.model_name,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
-                "ema_state_dict": ema.module.state_dict() if ema is not None else None,
-                "best_val_pauc": best_pauc,
-                "best_val_auc": best_auc,
-                "metadata_dim": metadata_dim,
-                "use_metadata": config.use_metadata,
-                "config": {k: str(v) if isinstance(v, Path) else v
-                           for k, v in asdict(config).items()},
-            }
-            save_checkpoint(checkpoint_payload, checkpoint_path)
+            checkpoint_payload["best_val_pauc"] = best_pauc
+            checkpoint_payload["best_val_auc"] = best_auc
+            save_checkpoint(checkpoint_payload, best_checkpoint_path)
+            if best_root_ckpt_path.resolve() != best_checkpoint_path.resolve():
+                shutil.copy2(best_checkpoint_path, best_root_ckpt_path)
+            print(f"  ★ New best pAUC={best_pauc:.4f} — saved to {best_checkpoint_path}")
+            print("✓ Checkpoint saved")
 
-            if root_ckpt_path.resolve() != checkpoint_path.resolve():
-                import shutil
-                shutil.copy2(checkpoint_path, root_ckpt_path)
-            print(f"  ★ New best pAUC={best_pauc:.4f} — saved to {checkpoint_path}")
+        # 3. Update and write training_state.json after every epoch
+        training_state.current_fold = fold_idx
+        training_state.last_epoch = epoch
+        if best_pauc != float("-inf") and not np.isnan(best_pauc):
+            training_state.best_pauc = best_pauc
+        elif current_score != float("-inf") and not np.isnan(current_score):
+            training_state.best_pauc = current_score
+        training_state.save(config.output_dir)
 
         if early_stopping(current_score):
             break
+
+    # Mark fold completed and write training_state.json
+    if fold_idx not in training_state.completed_folds:
+        training_state.completed_folds.append(fold_idx)
+    training_state.current_fold = fold_idx + 1 if fold_idx + 1 < config.n_splits else fold_idx
+    training_state.last_epoch = config.num_epochs
+    training_state.save(config.output_dir)
+    print("✓ Fold completed")
 
     # Save training history and plot curves
     history_df = pd.DataFrame(history)
@@ -450,7 +510,8 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
     print(f"RUNNING VALIDATION METRIC EVALUATION (Fold {fold_idx})")
     print(f"{'='*80}")
 
-    best_ckpt = load_checkpoint(checkpoint_path if checkpoint_path.exists() else root_ckpt_path, map_location=device)
+    target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else (last_checkpoint_path if last_checkpoint_path.exists() else last_root_ckpt_path))
+    best_ckpt = load_checkpoint(target_eval_ckpt, map_location=device)
     model.load_state_dict(best_ckpt["model_state_dict"])
     model.eval()
 
@@ -490,7 +551,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
 
     return {
         "history": history,
-        "best_checkpoint": str(checkpoint_path),
+        "best_checkpoint": str(target_eval_ckpt),
         "best_val_pauc": val_pauc,
         "best_val_auc": val_auc,
         "accuracy": val_acc,

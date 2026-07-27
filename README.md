@@ -128,6 +128,41 @@ python main.py app
 
 ---
 
+## 🔄 Kaggle Disconnect Recovery & Training Resume Workflow
+
+The training pipeline is engineered for robust fault-tolerance on Kaggle GPU and remote environments. Progress is continuously persisted after every epoch and completed fold to survive unexpected disconnects or runtime limits.
+
+### Checkpointing & State Persistence
+- **LAST Checkpoint**: Saved after **every single epoch** to `outputs/checkpoints/{backbone_name}/last_checkpoint_fold{fold}.pt`. Payload contains `model_state_dict`, `optimizer_state_dict`, `scheduler_state_dict`, `scaler_state_dict`, `ema_state_dict`, `epoch`, `fold`, `metrics`, and full `config`.
+- **BEST Checkpoint**: Saved when validation pAUC improves to `outputs/checkpoints/{backbone_name}/best_model_fold{fold}.pt`.
+- **Training State Tracker**: Written to `outputs/training_state.json` after every epoch and completed fold:
+  ```json
+  {
+      "completed_folds": [0, 1],
+      "current_fold": 2,
+      "last_epoch": 7,
+      "best_pauc": 0.1979
+  }
+  ```
+
+### Exact Kaggle Resume Procedure
+1. **Launch Initial Training**:
+   ```bash
+   python train_kaggle.py --all-folds --epochs 10
+   ```
+2. **Resume After Disconnect**:
+   If Kaggle disconnects or time limits expire, execute:
+   ```bash
+   python train_kaggle.py --all-folds --epochs 10 --resume
+   ```
+3. **Pipeline Action**:
+   - Reads `training_state.json`.
+   - Skips all completed folds (`completed_folds: [0, 1]`).
+   - Loads `last_checkpoint_fold2.pt` for the active fold and resumes training at epoch `7 + 1 = 8`.
+   - Continues through all remaining folds seamlessly.
+
+---
+
 ## 📊 Evaluation Results
 
 Model performance metrics evaluated on the ISIC 2024 validation dataset using `GroupKFold` split:
