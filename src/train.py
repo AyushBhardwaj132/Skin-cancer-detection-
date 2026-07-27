@@ -31,7 +31,7 @@ from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, 
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
-from src.training.hardware import setup_accelerated_model
+from src.training.hardware import setup_accelerated_model, ThroughputLogger
 from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
@@ -167,14 +167,24 @@ def _train_one_epoch(
     running_samples = 0
     use_amp = use_fp16 and device.type == "cuda"
 
+    throughput_logger = ThroughputLogger(
+        total_batches=len(dataloader),
+        batch_size=getattr(dataloader, "batch_size", 32) or 32,
+        device=device,
+        log_interval=100,
+    )
+
     pbar = tqdm(dataloader, desc=pbar_desc, leave=False)
-    for batch in pbar:
+    for batch_idx, batch in enumerate(pbar, 1):
+        throughput_logger.end_data_timer()
+
         images = batch["image"].to(device, non_blocking=True)
         metadata = batch["metadata"].to(device, non_blocking=True) if "metadata" in batch else None
         labels = batch["target"].to(device, non_blocking=True).float().unsqueeze(1)
 
         optimizer.zero_grad(set_to_none=True)
 
+        t_fwd_start = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=use_amp):
             if use_mixup and np.random.rand() < 0.5:
                 images, labels_a, labels_b, lam = mixup_data(images, labels, alpha=mixup_alpha)
@@ -188,6 +198,10 @@ def _train_one_epoch(
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = criterion(logits, labels)
 
+        t_fwd_end = time.perf_counter()
+        fwd_time = t_fwd_end - t_fwd_start
+
+        t_bwd_start = time.perf_counter()
         if use_amp and scaler is not None:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -199,6 +213,9 @@ def _train_one_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
+        t_bwd_end = time.perf_counter()
+        bwd_time = t_bwd_end - t_bwd_start
+
         if ema is not None:
             raw_model = model.module if hasattr(model, "module") else model
             ema.update(raw_model)
@@ -207,6 +224,13 @@ def _train_one_epoch(
         running_loss += loss.item() * batch_size
         running_samples += batch_size
         pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+        throughput_logger.log_batch(
+            batch_idx=batch_idx,
+            fwd_time=fwd_time,
+            bwd_time=bwd_time,
+            batch_size=batch_size,
+        )
 
     return running_loss / max(running_samples, 1)
 

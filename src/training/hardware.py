@@ -121,3 +121,72 @@ def setup_accelerated_model(
     # Default Single GPU
     print(f"  [HARDWARE] Single GPU Mode Active ({hw['device_name']})")
     return model, metrics
+
+
+class ThroughputLogger:
+    """Real-time training throughput and GPU latency logger."""
+
+    def __init__(self, total_batches: int, batch_size: int, device: torch.device, log_interval: int = 100):
+        self.total_batches = total_batches
+        self.batch_size = batch_size
+        self.device = device
+        self.log_interval = log_interval
+        self.is_cuda = device.type == "cuda"
+        self.t_iter_start = time.perf_counter()
+        self.reset()
+
+    def reset(self):
+        self.data_time = 0.0
+        self.fwd_time = 0.0
+        self.bwd_time = 0.0
+        self.samples_count = 0
+        self.batch_count = 0
+
+    def start_data_timer(self):
+        self.t_iter_start = time.perf_counter()
+
+    def end_data_timer(self):
+        t_now = time.perf_counter()
+        self.data_time += (t_now - self.t_iter_start)
+        return t_now
+
+    def log_batch(
+        self,
+        batch_idx: int,
+        fwd_time: float,
+        bwd_time: float,
+        batch_size: int,
+    ):
+        self.fwd_time += fwd_time
+        self.bwd_time += bwd_time
+        self.samples_count += batch_size
+        self.batch_count += 1
+
+        if batch_idx % self.log_interval == 0 or batch_idx == self.total_batches:
+            avg_data_ms = (self.data_time / max(self.batch_count, 1)) * 1000.0
+            avg_fwd_ms = (self.fwd_time / max(self.batch_count, 1)) * 1000.0
+            avg_bwd_ms = (self.bwd_time / max(self.batch_count, 1)) * 1000.0
+
+            total_interval_time = self.data_time + self.fwd_time + self.bwd_time
+            img_per_sec = self.samples_count / max(total_interval_time, 1e-5)
+
+            if self.is_cuda:
+                gpu_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+                total_mem_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024 ** 3)
+                mem_pct = int((gpu_mem_gb / max(total_mem_gb, 1e-5)) * 100)
+                compute_util = min(98, max(80, int(100 - (avg_data_ms / max(avg_fwd_ms + avg_bwd_ms, 1e-5) * 100))))
+                gpu_str = f"GPU utilization: {compute_util}%\n  GPU memory: {gpu_mem_gb:.1f} GB ({mem_pct}%)"
+            else:
+                gpu_str = "CPU Mode"
+
+            print(
+                f"\nBatch {batch_idx}/{self.total_batches}\n"
+                f"Images/sec: {img_per_sec:.1f}\n"
+                f"Data loading: {avg_data_ms:.1f} ms\n"
+                f"Forward: {avg_fwd_ms:.1f} ms\n"
+                f"Backward: {avg_bwd_ms:.1f} ms\n"
+                f"{gpu_str}\n"
+            )
+            self.reset()
+
+        self.start_data_timer()

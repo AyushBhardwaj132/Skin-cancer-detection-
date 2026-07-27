@@ -26,6 +26,7 @@ from src.data.split import get_fold_dataframes
 from src.models.fusion_model import FusionModel
 from src.training.losses import get_loss_fn
 from src.training.ema import ModelEMA
+from src.training.hardware import ThroughputLogger
 from src.validate import validate as run_validation
 from src.utils import ensure_dir, get_device, save_checkpoint, seed_everything, seed_worker
 
@@ -118,23 +119,44 @@ def main():
     running_loss = 0.0
     n_samples = 0
     t0 = time.time()
-    for i, batch in enumerate(train_loader):
+
+    throughput_logger = ThroughputLogger(
+        total_batches=len(train_loader),
+        batch_size=config.batch_size,
+        device=device,
+        log_interval=10,
+    )
+
+    for i, batch in enumerate(train_loader, 1):
+        throughput_logger.end_data_timer()
+
         images = batch["image"].to(device)
         metadata = batch["metadata"].to(device) if "metadata" in batch else None
         labels = batch["target"].to(device).float().unsqueeze(1)
 
         optimizer.zero_grad(set_to_none=True)
+
+        t_fwd_start = time.perf_counter()
         logits = model(images, metadata) if metadata is not None else model(images)
         loss = criterion(logits, labels)
+        fwd_time = time.perf_counter() - t_fwd_start
+
+        t_bwd_start = time.perf_counter()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        bwd_time = time.perf_counter() - t_bwd_start
 
         bs = images.size(0)
         running_loss += loss.item() * bs
         n_samples += bs
-        if (i + 1) % 5 == 0 or (i + 1) == len(train_loader):
-            print(f"  batch {i+1}/{len(train_loader)} | loss={loss.item():.4f}")
+
+        throughput_logger.log_batch(
+            batch_idx=i,
+            fwd_time=fwd_time,
+            bwd_time=bwd_time,
+            batch_size=bs,
+        )
 
     train_loss = running_loss / max(n_samples, 1)
     train_time = time.time() - t0
