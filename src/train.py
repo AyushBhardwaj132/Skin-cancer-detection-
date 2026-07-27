@@ -367,7 +367,11 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
 
     # Multi-GPU DDP setup or DataParallel vs Single GPU benchmark with automatic fallback
     sample_batch = next(iter(train_loader)) if len(train_loader) > 0 else None
-    model, accel_metrics = setup_accelerated_model(model, device, sample_batch=sample_batch)
+    model, accel_metrics = setup_accelerated_model(
+        model, device,
+        sample_batch=sample_batch,
+        multi_gpu_mode=getattr(config, "multi_gpu_mode", "auto"),
+    )
 
     raw_model = model.module if hasattr(model, "module") else model
 

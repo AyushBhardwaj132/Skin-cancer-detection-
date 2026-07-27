@@ -110,15 +110,17 @@ def setup_accelerated_model(
     model: nn.Module,
     device: torch.device,
     sample_batch: dict | None = None,
+    multi_gpu_mode: str = "auto",
 ) -> tuple[nn.Module, dict]:
-    """Configures DDP or benchmarks REAL training throughput (DataParallel vs Single GPU).
+    """Configures multi-GPU mode (auto, single, dataparallel, ddp) and measures REAL training throughput.
 
-    Measures throughput under REAL training conditions (train mode, AMP autocast, AND backward pass).
-    If DataParallel is slower due to PCI-e gradient scatter/gather latency or GIL overhead,
-    automatically disables DataParallel and falls back to Single GPU mode for maximum speed.
-
-    Returns:
-        (accelerated_model, metrics_report)
+    Options for multi_gpu_mode:
+        - "single": Force single GPU mode (disable DataParallel).
+        - "dataparallel": Force DataParallel multi-GPU wrapper.
+        - "ddp": Force DistributedDataParallel multi-process setup.
+        - "auto" (default): Benchmark REAL training throughput (train mode + AMP + backward pass).
+          If DataParallel is slower than Single GPU (e.g. Kaggle 2x T4 PCI-e gradient gather latency),
+          automatically disable DataParallel and fallback to Single GPU mode.
     """
     hw = get_hardware_info()
     model = model.to(device)
@@ -137,8 +139,20 @@ def setup_accelerated_model(
         print("  [HARDWARE] CPU Mode Active")
         return model, metrics
 
-    # Case 1: DDP Active (launched via torchrun / DDP)
-    if hw["is_ddp"] and hw["world_size"] > 1:
+    mode_str = str(multi_gpu_mode).lower().strip()
+
+    # Direct forced modes:
+    if mode_str == "single":
+        print(f"  [HARDWARE] Forced Single GPU Mode Active ({hw['device_name']})")
+        metrics["mode"] = "single_gpu"
+        return model, metrics
+
+    if mode_str == "dataparallel" and hw["gpu_count"] > 1:
+        print(f"  [HARDWARE] Forced DataParallel Mode Active across {hw['gpu_count']} GPUs")
+        metrics["mode"] = f"DataParallel ({hw['gpu_count']} GPUs)"
+        return nn.DataParallel(model), metrics
+
+    if mode_str == "ddp" or (hw["is_ddp"] and hw["world_size"] > 1):
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(backend="nccl")
         torch.cuda.set_device(hw["local_rank"])
@@ -147,7 +161,7 @@ def setup_accelerated_model(
         print(f"  [MULTI-GPU DDP] DistributedDataParallel Active across {hw['world_size']} GPUs (Rank {hw['local_rank']})")
         return ddp_model, metrics
 
-    # Case 2: Multi-GPU available in single process (DataParallel candidate)
+    # Auto mode: Multi-GPU available in single process (DataParallel candidate)
     if hw["gpu_count"] > 1 and sample_batch is not None:
         img, meta = _extract_inputs(sample_batch, device)
 

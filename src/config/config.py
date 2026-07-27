@@ -96,6 +96,7 @@ class Config:
     ensemble_method: str = "rank"  # simple, weighted, rank
     pseudo_pos_thresh: float = 0.99
     pseudo_neg_thresh: float = 0.01
+    multi_gpu_mode: str = "auto"  # auto, single, dataparallel, ddp
     use_fp16: bool = True
     use_ema: bool = True
     ema_decay: float = 0.999

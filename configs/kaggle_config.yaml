@@ -59,6 +59,8 @@ use_tta: true
 tta_steps: 4
 
 # --- Multi-GPU & Hardware Acceleration ---
+# multi_gpu_mode options: auto (default), single, dataparallel, ddp
+multi_gpu_mode: auto
 use_cuda: true
 use_fp16: true
 num_workers: 4
