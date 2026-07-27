@@ -161,7 +161,7 @@ def _train_one_epoch(
     cutmix_alpha: float = 1.0,
     use_fp16: bool = True,
     checkpoint_batch_interval: int = 500,
-    checkpoint_callback: callable | None = None,
+    save_intra_epoch_checkpoint: callable | None = None,
 ):
     """Train for one epoch with progress bar, AMP, EMA, optional MixUp/CutMix, and intra-epoch batch checkpointing."""
     model.train()
@@ -234,8 +234,16 @@ def _train_one_epoch(
             batch_size=batch_size,
         )
 
-        if checkpoint_callback is not None and checkpoint_batch_interval > 0 and batch_idx % checkpoint_batch_interval == 0:
-            checkpoint_callback(batch_idx, len(dataloader))
+        if (
+            save_intra_epoch_checkpoint is not None
+            and checkpoint_batch_interval > 0
+            and batch_idx > 0
+            and batch_idx % checkpoint_batch_interval == 0
+        ):
+            save_intra_epoch_checkpoint(
+                batch_idx,
+                len(dataloader),
+            )
 
     return running_loss / max(running_samples, 1)
 
@@ -475,7 +483,7 @@ def train(config: Config | None = None, fold_idx: int = 0, resume: bool = False)
             cutmix_alpha=config.cutmix_alpha,
             use_fp16=config.use_fp16,
             checkpoint_batch_interval=getattr(config, "checkpoint_batch_interval", 500),
-            checkpoint_callback=save_intra_epoch_checkpoint,
+            save_intra_epoch_checkpoint=save_intra_epoch_checkpoint,
         )
         print(f"\n[1/8] Training finished | train_loss={train_loss:.4f}", flush=True)
         sys.stdout.flush()

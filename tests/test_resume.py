@@ -183,3 +183,56 @@ def test_pre_validation_checkpoint_and_resume_on_validation_failure(tmp_path):
     ckpt = load_checkpoint(last_ckpt)
     assert ckpt["epoch"] == 1
     assert ckpt["epoch"] + 1 == 2
+
+
+def test_save_intra_epoch_checkpoint_invoked_during_training(tmp_path):
+    """Confirm that save_intra_epoch_checkpoint() is actually invoked during training."""
+    from src.train import _train_one_epoch
+    from torch.utils.data import TensorDataset, DataLoader
+
+    out_dir = tmp_path / "outputs"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = out_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    last_ckpt = ckpt_dir / "last_checkpoint_fold0.pt"
+
+    # Dummy dataset of 6 batches (12 samples, batch_size=2)
+    x = torch.randn(12, 1, 10, 10)
+    y = torch.tensor([0.0, 1.0] * 6)
+    dataset = TensorDataset(x, y)
+
+    def collate_fn(batch):
+        imgs = torch.stack([b[0] for b in batch])
+        lbls = torch.stack([b[1] for b in batch])
+        return {"image": imgs, "target": lbls}
+
+    loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
+
+    model = torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(100, 1))
+    criterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    device = torch.device("cpu")
+
+    invoked_batches = []
+
+    def mock_save_intra_epoch_checkpoint(batch_idx: int, total_batches: int):
+        invoked_batches.append(batch_idx)
+        save_checkpoint({"epoch": 1, "batch_idx": batch_idx}, last_ckpt)
+        state = TrainingState(current_fold=0, last_epoch=1, last_batch_idx=batch_idx)
+        state.save(out_dir)
+
+    _train_one_epoch(
+        model=model,
+        dataloader=loader,
+        criterion=criterion,
+        optimizer=optimizer,
+        scaler=None,
+        device=device,
+        use_metadata=False,
+        checkpoint_batch_interval=2,
+        save_intra_epoch_checkpoint=mock_save_intra_epoch_checkpoint,
+    )
+
+    assert invoked_batches == [2, 4, 6]
+    assert last_ckpt.exists()
+    assert (out_dir / "training_state.json").exists()
