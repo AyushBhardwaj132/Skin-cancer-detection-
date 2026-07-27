@@ -184,23 +184,79 @@ def _train_one_epoch(
         log_interval=100,
     )
 
-    pbar = tqdm(dataloader, desc=pbar_desc, leave=False)
-    for batch_idx, batch in enumerate(pbar, 1):
-        throughput_logger.end_data_timer()
+    total_batches = len(dataloader)
+    print(f"  [TRAIN LOOP] Starting training loop across {total_batches} batches...", flush=True)
+    sys.stdout.flush()
 
+    t_iter_fetch0 = time.perf_counter()
+    data_iter = iter(dataloader)
+    batch_idx = 0
+
+    while True:
+        batch_idx += 1
+
+        # 1. DataLoader fetch
+        print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Fetching next batch from DataLoader worker...", flush=True)
+        sys.stdout.flush()
+        t_dl_start = time.perf_counter()
+        try:
+            batch = next(data_iter)
+            t_dl_end = time.perf_counter()
+            dl_elapsed = t_dl_end - t_dl_start
+            throughput_logger.end_data_timer()
+            print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Batch fetched in {dl_elapsed:.4f}s", flush=True)
+            if dl_elapsed > 5.0:
+                print(f"  [WARN TRAIN STEP] DataLoader fetch took {dl_elapsed:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+        except StopIteration:
+            print(f"  [TRAIN LOOP] Reached end of DataLoader at batch {batch_idx - 1}", flush=True)
+            sys.stdout.flush()
+            break
+        except Exception as dl_err:
+            print(f"  [ERROR TRAIN STEP 1] DataLoader fetch raised exception: {dl_err}", flush=True)
+            sys.stdout.flush()
+            raise dl_err
+
+        # 2. Batch transfer to GPU
+        print(f"  [TRAIN STEP 2] Transferring batch tensors to device ({device})...", flush=True)
+        sys.stdout.flush()
+        t_gpu_start = time.perf_counter()
         images = batch["image"].to(device, non_blocking=True)
-        metadata = batch["metadata"].to(device, non_blocking=True) if "metadata" in batch else None
+        metadata = batch["metadata"].to(device, non_blocking=True) if ("metadata" in batch and batch["metadata"] is not None) else None
         labels = batch["target"].to(device, non_blocking=True).float().unsqueeze(1)
+        t_gpu_end = time.perf_counter()
+        gpu_elapsed = t_gpu_end - t_gpu_start
+        print(f"  [TRAIN STEP 2] Batch transferred to device in {gpu_elapsed:.4f}s", flush=True)
+        if gpu_elapsed > 5.0:
+            print(f"  [WARN TRAIN STEP] Batch transfer took {gpu_elapsed:.2f}s (>5s limit)!", flush=True)
+        sys.stdout.flush()
 
+        # 3. Optimizer zero_grad
+        print(f"  [TRAIN STEP 3] Zeroing optimizer gradients...", flush=True)
+        sys.stdout.flush()
+        t_zg_start = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
+        t_zg_end = time.perf_counter()
+        zg_elapsed = t_zg_end - t_zg_start
+        print(f"  [TRAIN STEP 3] Optimizer zero_grad completed in {zg_elapsed:.4f}s", flush=True)
+        if zg_elapsed > 5.0:
+            print(f"  [WARN TRAIN STEP] Optimizer zero_grad took {zg_elapsed:.2f}s (>5s limit)!", flush=True)
+        sys.stdout.flush()
 
+        # 4. MixUp / CutMix & Forward pass & Loss computation
+        print(f"  [TRAIN STEP 4] Executing Forward pass & Loss computation (AMP={use_amp})...", flush=True)
+        sys.stdout.flush()
         t_fwd_start = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=use_amp):
             if use_mixup and np.random.rand() < 0.5:
+                print("    [MIXUP] Applying MixUp augmentation...", flush=True)
+                sys.stdout.flush()
                 images, labels_a, labels_b, lam = mixup_data(images, labels, alpha=mixup_alpha)
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = lam * criterion(logits, labels_a) + (1 - lam) * criterion(logits, labels_b)
             elif use_cutmix and np.random.rand() < 0.5:
+                print("    [CUTMIX] Applying CutMix augmentation...", flush=True)
+                sys.stdout.flush()
                 images, labels_a, labels_b, lam = cutmix_data(images, labels, alpha=cutmix_alpha)
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = lam * criterion(logits, labels_a) + (1 - lam) * criterion(logits, labels_b)
@@ -210,37 +266,128 @@ def _train_one_epoch(
 
         t_fwd_end = time.perf_counter()
         fwd_time = t_fwd_end - t_fwd_start
+        print(f"  [TRAIN STEP 4] Forward pass & Loss completed in {fwd_time:.4f}s", flush=True)
+        if fwd_time > 5.0:
+            print(f"  [WARN TRAIN STEP] Forward pass took {fwd_time:.2f}s (>5s limit)!", flush=True)
+        sys.stdout.flush()
 
+        # 5. Backward Pass & Scaler Step
+        print(f"  [TRAIN STEP 5] Executing Backward Pass & Optimizer Step...", flush=True)
+        sys.stdout.flush()
         t_bwd_start = time.perf_counter()
         if use_amp and scaler is not None:
+            print("    [BACKWARD 1/4] scaler.scale(loss).backward()...", flush=True)
+            sys.stdout.flush()
+            t_b0 = time.perf_counter()
             scaler.scale(loss).backward()
+            t_b1 = time.perf_counter()
+            print(f"    [BACKWARD 1/4] Backward completed in {t_b1 - t_b0:.4f}s", flush=True)
+            if (t_b1 - t_b0) > 5.0:
+                print(f"    [WARN TRAIN STEP] Backward step took {t_b1 - t_b0:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+
+            print("    [BACKWARD 2/4] scaler.unscale_(optimizer)...", flush=True)
+            sys.stdout.flush()
+            t_b2 = time.perf_counter()
             scaler.unscale_(optimizer)
+            t_b3 = time.perf_counter()
+            print(f"    [BACKWARD 2/4] unscale_ completed in {t_b3 - t_b2:.4f}s", flush=True)
+            if (t_b3 - t_b2) > 5.0:
+                print(f"    [WARN TRAIN STEP] unscale_ step took {t_b3 - t_b2:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+
+            print("    [BACKWARD 3/4] clip_grad_norm_...", flush=True)
+            sys.stdout.flush()
+            t_b4 = time.perf_counter()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            t_b5 = time.perf_counter()
+            print(f"    [BACKWARD 3/4] clip_grad_norm_ completed in {t_b5 - t_b4:.4f}s", flush=True)
+            if (t_b5 - t_b4) > 5.0:
+                print(f"    [WARN TRAIN STEP] clip_grad_norm_ took {t_b5 - t_b4:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+
+            print("    [BACKWARD 4/4] scaler.step(optimizer) & scaler.update()...", flush=True)
+            sys.stdout.flush()
+            t_b6 = time.perf_counter()
             scaler.step(optimizer)
             scaler.update()
+            t_b7 = time.perf_counter()
+            print(f"    [BACKWARD 4/4] scaler.step & update completed in {t_b7 - t_b6:.4f}s", flush=True)
+            if (t_b7 - t_b6) > 5.0:
+                print(f"    [WARN TRAIN STEP] scaler.step & update took {t_b7 - t_b6:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
         else:
+            print("    [BACKWARD 1/3] loss.backward()...", flush=True)
+            sys.stdout.flush()
+            t_b0 = time.perf_counter()
             loss.backward()
+            t_b1 = time.perf_counter()
+            print(f"    [BACKWARD 1/3] Backward completed in {t_b1 - t_b0:.4f}s", flush=True)
+            if (t_b1 - t_b0) > 5.0:
+                print(f"    [WARN TRAIN STEP] Backward step took {t_b1 - t_b0:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+
+            print("    [BACKWARD 2/3] clip_grad_norm_...", flush=True)
+            sys.stdout.flush()
+            t_b2 = time.perf_counter()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            t_b3 = time.perf_counter()
+            print(f"    [BACKWARD 2/3] clip_grad_norm_ completed in {t_b3 - t_b2:.4f}s", flush=True)
+            if (t_b3 - t_b2) > 5.0:
+                print(f"    [WARN TRAIN STEP] clip_grad_norm_ took {t_b3 - t_b2:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
+
+            print("    [BACKWARD 3/3] optimizer.step()...", flush=True)
+            sys.stdout.flush()
+            t_b4 = time.perf_counter()
             optimizer.step()
+            t_b5 = time.perf_counter()
+            print(f"    [BACKWARD 3/3] optimizer.step completed in {t_b5 - t_b4:.4f}s", flush=True)
+            if (t_b5 - t_b4) > 5.0:
+                print(f"    [WARN TRAIN STEP] optimizer.step took {t_b5 - t_b4:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
 
         t_bwd_end = time.perf_counter()
         bwd_time = t_bwd_end - t_bwd_start
+        print(f"  [TRAIN STEP 5] Backward pass & optimizer step completed in {bwd_time:.4f}s", flush=True)
+        if bwd_time > 5.0:
+            print(f"  [WARN TRAIN STEP] Backward pass & optimizer step took {bwd_time:.2f}s (>5s limit)!", flush=True)
+        sys.stdout.flush()
 
+        # 6. EMA Update
         if ema is not None:
+            print(f"  [TRAIN STEP 6] Updating Model EMA...", flush=True)
+            sys.stdout.flush()
+            t_ema_start = time.perf_counter()
             raw_model = model.module if hasattr(model, "module") else model
             ema.update(raw_model)
+            t_ema_end = time.perf_counter()
+            ema_elapsed = t_ema_end - t_ema_start
+            print(f"  [TRAIN STEP 6] EMA update completed in {ema_elapsed:.4f}s", flush=True)
+            if ema_elapsed > 5.0:
+                print(f"  [WARN TRAIN STEP] EMA update took {ema_elapsed:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
 
+        # 7. Logging & Checkpoint Logic
         batch_size = images.size(0)
         running_loss += loss.item() * batch_size
         running_samples += batch_size
-        pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
+        print(f"  [TRAIN STEP 7] Logging throughput batch stats...", flush=True)
+        sys.stdout.flush()
+        t_log_start = time.perf_counter()
         throughput_logger.log_batch(
             batch_idx=batch_idx,
             fwd_time=fwd_time,
             bwd_time=bwd_time,
             batch_size=batch_size,
         )
+        t_log_end = time.perf_counter()
+        log_elapsed = t_log_end - t_log_start
+        print(f"  [TRAIN STEP 7] Logging completed in {log_elapsed:.4f}s", flush=True)
+        if log_elapsed > 5.0:
+            print(f"  [WARN TRAIN STEP] Logging took {log_elapsed:.2f}s (>5s limit)!", flush=True)
+        sys.stdout.flush()
 
         if (
             save_intra_epoch_checkpoint is not None
@@ -248,10 +395,19 @@ def _train_one_epoch(
             and batch_idx > 0
             and batch_idx % checkpoint_batch_interval == 0
         ):
+            print(f"  [TRAIN STEP 8] Saving intra-epoch checkpoint at batch {batch_idx}/{total_batches}...", flush=True)
+            sys.stdout.flush()
+            t_ckpt_start = time.perf_counter()
             save_intra_epoch_checkpoint(
                 batch_idx,
-                len(dataloader),
+                total_batches,
             )
+            t_ckpt_end = time.perf_counter()
+            ckpt_elapsed = t_ckpt_end - t_ckpt_start
+            print(f"  [TRAIN STEP 8] Intra-epoch checkpoint saved in {ckpt_elapsed:.4f}s", flush=True)
+            if ckpt_elapsed > 5.0:
+                print(f"  [WARN TRAIN STEP] Intra-epoch checkpoint took {ckpt_elapsed:.2f}s (>5s limit)!", flush=True)
+            sys.stdout.flush()
 
     return running_loss / max(running_samples, 1)
 
