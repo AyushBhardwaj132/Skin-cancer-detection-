@@ -485,7 +485,7 @@ def train(
             save_checkpoint(intra_payload, last_checkpoint_path)
             if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
                 shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
-            print(f"✓ Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
+            print(f"[OK] Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
             sys.stdout.flush()
 
         train_loss = _train_one_epoch(
@@ -644,7 +644,7 @@ def train(
         save_checkpoint(checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
-        print("✓ Checkpoint saved", flush=True)
+        print("[OK] Checkpoint saved", flush=True)
 
         if current_score > best_pauc:
             best_pauc = current_score
