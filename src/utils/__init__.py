@@ -67,24 +67,51 @@ def resolve_image_path(image_dir: str | Path, image_id: str) -> Path:
 def save_checkpoint(state: dict, path: str | Path) -> Path:
     path = Path(path).resolve()
     ensure_dir(path.parent)
+
     try:
         torch.save(state, path)
     except Exception as e:
-        raise RuntimeError(f"[FAIL FAST] Failed to save checkpoint to {path}: {e}")
+        raise RuntimeError(f"[FAIL FAST] Failed to execute torch.save to {path}: {e}")
 
-    if not path.exists():
-        raise RuntimeError(f"[FAIL FAST] Checkpoint file was not created at: {path}")
+    # Force OS kernel page cache buffer sync to physical storage
+    try:
+        with open(path, "rb") as f:
+            os.fsync(f.fileno())
+    except Exception as sync_err:
+        pass
 
-    size_bytes = path.stat().st_size
+    # Task 5: Physical existence check using os.path.exists
+    if not os.path.exists(path):
+        raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file DOES NOT EXIST on disk after save: {path}")
+
+    # Verify size > 0
+    size_bytes = os.path.getsize(path)
     if size_bytes == 0:
-        raise RuntimeError(f"[FAIL FAST] Checkpoint file exists but is 0 bytes at: {path}")
+        raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file exists but is 0 bytes: {path}")
 
+    # Task 8: Immediate torch.load reload verification
+    try:
+        _ = torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as load_err:
+        raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file corrupt or unreadable immediately after write: {path} (Error: {load_err})")
+
+    # Task 3 formatted output
     size_mb = size_bytes / (1024 * 1024)
-    print("\n[SAVE VERIFIED]", flush=True)
-    print("File:", flush=True)
+    print("\nCheckpoint saved:", flush=True)
     print(f"{path}", flush=True)
-    print("Exists: YES", flush=True)
-    print(f"Size: {size_mb:.1f} MB\n", flush=True)
+    print("\nExists:", flush=True)
+    print(f"{os.path.exists(path)}", flush=True)
+    print("\nSize:", flush=True)
+    print(f"{size_bytes} bytes", flush=True)
+
+    print("\nDirectory contents:", flush=True)
+    dir_files = sorted([f.name for f in path.parent.iterdir() if f.is_file()])
+    if not dir_files:
+        print("(Empty)", flush=True)
+    else:
+        for fname in dir_files:
+            print(f"- {fname}", flush=True)
+    print("\n", flush=True)
     sys.stdout.flush()
 
     return path

@@ -194,7 +194,9 @@ class Config:
 
         for key, value in data.items():
             if key in valid_fields:
-                setattr(config, key, value)
+                setattr(config, key, Path(value) if "dir" in key or "path" in key else value)
+            elif key == "kaggle_output_dir":
+                config.output_dir = Path(value)
             if key == "backbone_name":
                 config.model_name = value
 

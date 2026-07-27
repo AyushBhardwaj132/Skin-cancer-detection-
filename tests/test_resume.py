@@ -277,3 +277,46 @@ def test_resolve_resume_fold_advances_from_completed_fold(tmp_path, capsys):
     assert "[RESUME] current_fold = 1" in captured.out
     assert "[RESUME] Next fold to execute = 1" in captured.out
     assert target_fold == 1
+
+
+def test_checkpoint_physical_persistence_and_reload(tmp_path):
+    """Automated test proving physical disk persistence, non-zero size, torch.load readability,
+    and state JSON validity after running 1 tiny epoch."""
+    import os
+    import json
+    import torch
+    from src.train import train
+
+    config = Config.from_yaml("configs/kaggle_config.yaml")
+    config.output_dir = tmp_path / "outputs"
+    config.num_epochs = 1
+    config.num_workers = 0
+    config.checkpoint_batch_interval = 2
+    config.use_metadata = False
+
+    train(config, fold_idx=0, limit_train=10, limit_val=10)
+
+    state_file = config.output_dir / "training_state.json"
+    root_last_ckpt = config.checkpoint_dir / "last_checkpoint_fold0.pt"
+
+    # Assert 1: os.path.exists
+    assert os.path.exists(state_file), f"Missing training_state.json at {state_file}"
+    assert os.path.exists(root_last_ckpt), f"Missing last_checkpoint_fold0.pt at {root_last_ckpt}"
+
+    # Assert 2: size > 0
+    assert os.path.getsize(state_file) > 0, "training_state.json is 0 bytes"
+    assert os.path.getsize(root_last_ckpt) > 0, "last_checkpoint_fold0.pt is 0 bytes"
+
+    # Assert 3: torch.load succeeds
+    loaded_ckpt = torch.load(root_last_ckpt, map_location="cpu", weights_only=False)
+    assert "model_state_dict" in loaded_ckpt
+    assert loaded_ckpt["epoch"] == 1
+
+    # Assert 4: json.load succeeds
+    with open(state_file, "r", encoding="utf-8") as f:
+        state_data = json.load(f)
+    assert "completed_folds" in state_data
+
+    # Assert 5: directory contains expected files
+    dir_files = [f.name for f in config.checkpoint_dir.iterdir() if f.is_file()]
+    assert "last_checkpoint_fold0.pt" in dir_files

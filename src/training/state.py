@@ -69,22 +69,43 @@ class TrainingState:
         try:
             with open(state_path, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
         except Exception as e:
             raise RuntimeError(f"[FAIL FAST] Failed to write training_state.json to {state_path}: {e}")
 
-        if not state_path.exists():
-            raise RuntimeError(f"[FAIL FAST] training_state.json was not created at: {state_path}")
+        # Task 5: Physical existence check using os.path.exists
+        if not os.path.exists(state_path):
+            raise RuntimeError(f"[CRITICAL FAILURE] training_state.json DOES NOT EXIST on disk after write: {state_path}")
 
-        size_bytes = state_path.stat().st_size
+        # Verify size > 0
+        size_bytes = os.path.getsize(state_path)
         if size_bytes == 0:
-            raise RuntimeError(f"[FAIL FAST] training_state.json exists but is 0 bytes at: {state_path}")
+            raise RuntimeError(f"[CRITICAL FAILURE] training_state.json exists but is 0 bytes: {state_path}")
 
-        size_mb = size_bytes / (1024 * 1024)
-        size_str = f"{size_mb:.1f} MB" if size_mb >= 1.0 else f"{size_bytes} bytes"
-        print("\n[SAVE VERIFIED]", flush=True)
-        print("File:", flush=True)
+        # Task 8: Immediate json.load reload verification
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                _ = json.load(f)
+        except Exception as json_err:
+            raise RuntimeError(f"[CRITICAL FAILURE] training_state.json is corrupt or unreadable immediately after write: {state_path} (Error: {json_err})")
+
+        # Task 3 formatted output
+        print("\nCheckpoint saved:", flush=True)
         print(f"{state_path}", flush=True)
-        print("Exists: YES", flush=True)
-        print(f"Size: {size_str}\n", flush=True)
+        print("\nExists:", flush=True)
+        print(f"{os.path.exists(state_path)}", flush=True)
+        print("\nSize:", flush=True)
+        print(f"{size_bytes} bytes", flush=True)
+
+        print("\nDirectory contents:", flush=True)
+        dir_files = sorted([f.name for f in state_path.parent.iterdir() if f.is_file()])
+        if not dir_files:
+            print("(Empty)", flush=True)
+        else:
+            for fname in dir_files:
+                print(f"- {fname}", flush=True)
+        print("\n", flush=True)
         sys.stdout.flush()
+
         return state_path
