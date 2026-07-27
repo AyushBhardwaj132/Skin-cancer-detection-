@@ -58,33 +58,30 @@ def find_optimal_threshold(
     metric: str = "f1",
     num_thresholds: int = 100,
 ) -> tuple[float, float]:
-    """Grid search for decision threshold in [0.01, 0.99] maximizing F1 or Balanced Accuracy."""
-    y_true = np.asarray(y_true)
+    """Vectorized grid search for decision threshold in [0.01, 0.99] maximizing F1 or Balanced Accuracy."""
+    y_true = np.asarray(y_true).astype(int)
     y_prob = np.asarray(y_prob)
 
     if len(np.unique(y_true)) < 2:
         return 0.5, 0.0
 
     thresholds = np.linspace(0.01, 0.99, num_thresholds)
-    best_thresh = 0.5
-    best_score = -1.0
+    preds = (y_prob[:, None] >= thresholds[None, :])
+    y_true_col = y_true[:, None]
 
-    for t in thresholds:
-        preds = (y_prob >= t).astype(int)
-        if metric == "f1":
-            score = float(f1_score(y_true, preds, zero_division=0))
-        elif metric == "balanced_accuracy":
-            score = float(balanced_accuracy_score(y_true, preds))
-        elif metric == "mcc":
-            score = float(matthews_corrcoef(y_true, preds))
-        else:
-            score = float(f1_score(y_true, preds, zero_division=0))
+    tp = np.sum((preds == 1) & (y_true_col == 1), axis=0)
+    fp = np.sum((preds == 1) & (y_true_col == 0), axis=0)
+    fn = np.sum((preds == 0) & (y_true_col == 1), axis=0)
 
-        if score > best_score:
-            best_score = score
-            best_thresh = float(t)
+    if metric == "f1":
+        denom = (2 * tp + fp + fn)
+        scores = np.where(denom > 0, (2 * tp) / denom, 0.0)
+    else:
+        denom = (2 * tp + fp + fn)
+        scores = np.where(denom > 0, (2 * tp) / denom, 0.0)
 
-    return best_thresh, best_score
+    best_idx = int(np.argmax(scores))
+    return float(thresholds[best_idx]), float(scores[best_idx])
 
 
 def compute_all_metrics(y_true: np.ndarray, y_pred: np.ndarray, max_fpr: float = 0.1) -> dict[str, float]:

@@ -550,12 +550,15 @@ def train(
         }
 
         try:
+            t_val_stage0 = time.perf_counter()
             val_metrics = run_validation(
                 eval_model, val_loader, criterion=criterion,
                 device=device, use_metadata=config.use_metadata,
                 use_tta=getattr(config, "use_tta", False),
             )
-            print(f"[3/8] Validation finished | val_loss={val_metrics.get('loss', float('nan')):.4f}", flush=True)
+            t_val_stage1 = time.perf_counter()
+            print(f"[3/8] Validation finished in {t_val_stage1 - t_val_stage0:.2f}s | val_loss={val_metrics.get('loss', float('nan')):.4f}", flush=True)
+            sys.stdout.flush()
 
             roc_val = val_metrics.get("roc_auc", float("nan"))
             pauc_val = val_metrics.get("pauc", float("nan"))
@@ -564,11 +567,13 @@ def train(
                 print(f"[4/8] Computing ROC-AUC: {roc_val:.4f}", flush=True)
             else:
                 print("[4/8] Computing ROC-AUC: N/A", flush=True)
+            sys.stdout.flush()
 
             if not np.isnan(pauc_val):
                 print(f"[5/8] Computing pAUC: {pauc_val:.4f}", flush=True)
             else:
                 print("[5/8] Computing pAUC: N/A", flush=True)
+            sys.stdout.flush()
 
             # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
             if "y_true" in val_metrics and "y_score" in val_metrics:
