@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import Config
-from src.train import train, train_full_ensemble
+from src.train import train, train_full_ensemble, resolve_resume_fold
 
 
 def main():
@@ -90,8 +90,14 @@ def main():
         print(f"Executing Full 5-Fold GroupKFold Training Pipeline...")
         train_full_ensemble(config, resume=args.resume)
     else:
-        print(f"Executing Single-Fold Training Pipeline for Fold {args.fold}...")
-        train(config, fold_idx=args.fold, resume=args.resume)
+        target_fold = args.fold
+        if args.resume:
+            target_fold, _ = resolve_resume_fold(config, requested_fold=args.fold, resume=True)
+            if target_fold >= config.n_splits:
+                print(f"[RESUME] All {config.n_splits} folds are already completed. Exiting cleanly.", flush=True)
+                sys.exit(0)
+        print(f"Executing Single-Fold Training Pipeline for Fold {target_fold}...")
+        train(config, fold_idx=target_fold, resume=args.resume)
 
 
 if __name__ == "__main__":

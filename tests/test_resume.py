@@ -256,3 +256,24 @@ def test_smoke_test_generates_required_checkpoint_and_state_files(tmp_path):
 
     assert state_file.exists(), f"Missing {state_file}"
     assert root_last_ckpt.exists(), f"Missing {root_last_ckpt}"
+
+
+def test_resolve_resume_fold_advances_from_completed_fold(tmp_path, capsys):
+    """Verify that when fold 0 is completed, resolve_resume_fold advances to fold 1 automatically."""
+    from src.train import resolve_resume_fold
+
+    config = Config.from_yaml("configs/kaggle_config.yaml")
+    config.output_dir = tmp_path / "outputs"
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    state = TrainingState(completed_folds=[0], current_fold=1, last_epoch=1)
+    state.save(config.output_dir)
+
+    target_fold, _ = resolve_resume_fold(config, requested_fold=0, resume=True)
+
+    captured = capsys.readouterr()
+    assert "[RESUME] Loaded training_state.json" in captured.out
+    assert "[RESUME] completed_folds = [0]" in captured.out
+    assert "[RESUME] current_fold = 1" in captured.out
+    assert "[RESUME] Next fold to execute = 1" in captured.out
+    assert target_fold == 1

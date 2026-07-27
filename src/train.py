@@ -329,6 +329,39 @@ def plot_training_curves(history: list[dict], save_path: Path):
     print(f"  Training curves plot saved to {save_path}")
 
 
+def resolve_resume_fold(
+    config: Config,
+    requested_fold: int = 0,
+    resume: bool = True,
+) -> tuple[int, TrainingState]:
+    """Inspects training_state.json during resume and resolves the next uncompleted fold to execute."""
+    training_state = TrainingState.load(config.output_dir)
+
+    if not resume:
+        return requested_fold, training_state
+
+    print(f"[RESUME] Loaded training_state.json", flush=True)
+    print(f"[RESUME] completed_folds = {training_state.completed_folds}", flush=True)
+    print(f"[RESUME] current_fold = {training_state.current_fold}", flush=True)
+
+    next_fold = training_state.current_fold
+    while next_fold in training_state.completed_folds and next_fold < config.n_splits:
+        next_fold += 1
+
+    print(f"[RESUME] Next fold to execute = {next_fold}", flush=True)
+    sys.stdout.flush()
+
+    if requested_fold in training_state.completed_folds:
+        if next_fold < config.n_splits:
+            print(f"[RESUME] Requested Fold {requested_fold} is already completed. Automatically advancing execution to Fold {next_fold}!", flush=True)
+            return next_fold, training_state
+        else:
+            print(f"[RESUME] All {config.n_splits} folds are already completed in training_state.json.", flush=True)
+            return next_fold, training_state
+
+    return requested_fold, training_state
+
+
 def train(
     config: Config | None = None,
     fold_idx: int = 0,
@@ -355,20 +388,33 @@ def train(
     # --- Load Training State ---
     training_state = TrainingState.load(config.output_dir)
 
-    if resume and fold_idx in training_state.completed_folds:
-        print(f"Skipping Fold {fold_idx} (already completed in training_state.json)")
-        target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else None)
-        return {
-            "history": [],
-            "best_checkpoint": str(target_eval_ckpt) if target_eval_ckpt else "",
-            "best_val_pauc": training_state.best_pauc,
-            "best_val_auc": 0.0,
-            "accuracy": 0.0,
-            "precision": 0.0,
-            "recall": 0.0,
-            "f1": 0.0,
-            "metadata_dim": 0,
-        }
+    if resume:
+        print(f"[RESUME] Loaded training_state.json", flush=True)
+        print(f"[RESUME] completed_folds = {training_state.completed_folds}", flush=True)
+        print(f"[RESUME] current_fold = {training_state.current_fold}", flush=True)
+
+        next_fold = training_state.current_fold
+        while next_fold in training_state.completed_folds and next_fold < config.n_splits:
+            next_fold += 1
+
+        print(f"[RESUME] Next fold to execute = {next_fold}", flush=True)
+        sys.stdout.flush()
+
+        if fold_idx in training_state.completed_folds:
+            print(f"[RESUME] Skipping Fold {fold_idx} (already completed in training_state.json)", flush=True)
+            sys.stdout.flush()
+            target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else None)
+            return {
+                "history": [],
+                "best_checkpoint": str(target_eval_ckpt) if target_eval_ckpt else "",
+                "best_val_pauc": training_state.best_pauc,
+                "best_val_auc": 0.0,
+                "accuracy": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "metadata_dim": 0,
+            }
 
     device = get_device()
     gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0

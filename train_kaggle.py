@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import torch
 from src.config import Config
-from src.train import train
+from src.train import train, resolve_resume_fold
 
 
 def setup_kaggle_hardware(config: Config) -> None:
@@ -116,8 +116,14 @@ def main() -> None:
             print(f"{'='*80}")
             train(config, fold_idx=fold, resume=args.resume)
     else:
-        print(f"Executing Single-Fold Training Pipeline for Fold {args.fold}...")
-        train(config, fold_idx=args.fold, resume=args.resume)
+        target_fold = args.fold
+        if args.resume:
+            target_fold, _ = resolve_resume_fold(config, requested_fold=args.fold, resume=True)
+            if target_fold >= config.n_splits:
+                print(f"[RESUME] All {config.n_splits} folds are already completed. Exiting cleanly.", flush=True)
+                sys.exit(0)
+        print(f"Executing Single-Fold Training Pipeline for Fold {target_fold}...")
+        train(config, fold_idx=target_fold, resume=args.resume)
 
 
 if __name__ == "__main__":
