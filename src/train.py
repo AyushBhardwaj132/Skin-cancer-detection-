@@ -18,6 +18,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import shutil
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 from src.config import Config
 from src.dataset import ISICDataset
 from src.fusion_model import FusionModel
@@ -29,11 +31,10 @@ from src.patient_features import enrich_metadata
 from src.split import get_fold_dataframes
 from src.transforms import build_transforms, mixup_data, cutmix_data
 from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker
-from src.utils.hardware import get_hardware_info
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
-from src.training.hardware import setup_accelerated_model, ThroughputLogger
+from src.training.hardware import setup_accelerated_model, ThroughputLogger, get_hardware_info
 from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
