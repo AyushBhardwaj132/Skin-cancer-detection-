@@ -671,7 +671,7 @@ def train(
     training_state.current_fold = fold_idx + 1 if fold_idx + 1 < config.n_splits else fold_idx
     training_state.last_epoch = config.num_epochs
     training_state.save(config.output_dir)
-    print("✓ Fold completed")
+    print("[OK] Fold completed", flush=True)
 
     # Save training history and plot curves
     history_df = pd.DataFrame(history)
