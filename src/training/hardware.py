@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import inspect
 import torch
 import torch.nn as nn
 
@@ -26,12 +27,55 @@ def get_hardware_info() -> dict:
     }
 
 
+def _extract_inputs(sample_batch: any, device: torch.device) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Extracts input image and metadata tensors from arbitrary batch data structures."""
+    img, meta = None, None
+    if isinstance(sample_batch, dict):
+        if "image" in sample_batch:
+            img = sample_batch["image"]
+        elif "x" in sample_batch:
+            img = sample_batch["x"]
+        else:
+            img = next(iter(sample_batch.values())) if len(sample_batch) > 0 else None
+
+        if "metadata" in sample_batch and sample_batch["metadata"] is not None:
+            meta = sample_batch["metadata"]
+    elif isinstance(sample_batch, (tuple, list)):
+        img = sample_batch[0] if len(sample_batch) > 0 else None
+        if len(sample_batch) > 2 and isinstance(sample_batch[1], torch.Tensor) and sample_batch[1].ndim == 2:
+            meta = sample_batch[1]
+    elif isinstance(sample_batch, torch.Tensor):
+        img = sample_batch
+
+    if isinstance(img, torch.Tensor):
+        img = img.to(device, non_blocking=True)
+    if isinstance(meta, torch.Tensor):
+        meta = meta.to(device, non_blocking=True)
+
+    return img, meta
+
+
+def _run_forward(target_model: nn.Module, img: torch.Tensor | None, meta: torch.Tensor | None = None):
+    """Executes model forward pass safely for arbitrary nn.Module subclasses."""
+    if img is None:
+        return None
+    if meta is not None:
+        try:
+            return target_model(img, meta)
+        except TypeError:
+            return target_model(img)
+    return target_model(img)
+
+
 def setup_accelerated_model(
     model: nn.Module,
     device: torch.device,
     sample_batch: dict | None = None,
 ) -> tuple[nn.Module, dict]:
     """Configures DDP or benchmarks DataParallel vs Single GPU throughput.
+
+    Model-agnostic: automatically detects whether model expects 1 input tensor (image)
+    or 2 input tensors (image, metadata).
 
     If DataParallel is slower due to Python GIL or PCI-e broadcast overhead,
     automatically falls back to Single GPU mode for maximum throughput.
@@ -71,52 +115,52 @@ def setup_accelerated_model(
         print(f"  [MULTI-GPU BENCHMARK] Profiling Single GPU vs DataParallel throughput across {hw['gpu_count']} GPUs...")
 
         model.eval()
-        img = sample_batch["image"].to(device, non_blocking=True)
-        meta = sample_batch["metadata"].to(device, non_blocking=True) if "metadata" in sample_batch else None
+        img, meta = _extract_inputs(sample_batch, device)
 
-        # Test 1: Single GPU Throughput
-        with torch.no_grad():
-            _ = model(img, meta) if meta is not None else model(img)
-        torch.cuda.synchronize()
+        if img is not None:
+            # Test 1: Single GPU Throughput
+            with torch.no_grad():
+                _ = _run_forward(model, img, meta)
+            torch.cuda.synchronize()
 
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            for _ in range(5):
-                _ = model(img, meta) if meta is not None else model(img)
-        torch.cuda.synchronize()
-        t1 = time.perf_counter()
-        single_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
-        metrics["single_gpu_throughput"] = single_throughput
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                for _ in range(5):
+                    _ = _run_forward(model, img, meta)
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            single_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
+            metrics["single_gpu_throughput"] = single_throughput
 
-        # Test 2: DataParallel Throughput
-        dp_model = nn.DataParallel(model)
-        dp_model.eval()
-        with torch.no_grad():
-            _ = dp_model(img, meta) if meta is not None else dp_model(img)
-        torch.cuda.synchronize()
+            # Test 2: DataParallel Throughput
+            dp_model = nn.DataParallel(model)
+            dp_model.eval()
+            with torch.no_grad():
+                _ = _run_forward(dp_model, img, meta)
+            torch.cuda.synchronize()
 
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            for _ in range(5):
-                _ = dp_model(img, meta) if meta is not None else dp_model(img)
-        torch.cuda.synchronize()
-        t1 = time.perf_counter()
-        dp_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
-        metrics["dataparallel_throughput"] = dp_throughput
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                for _ in range(5):
+                    _ = _run_forward(dp_model, img, meta)
+            torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            dp_throughput = (5 * img.size(0)) / max(t1 - t0, 1e-5)
+            metrics["dataparallel_throughput"] = dp_throughput
 
-        print(f"  [BENCHMARK RESULT] Single GPU: {single_throughput:.1f} img/s | DataParallel: {dp_throughput:.1f} img/s")
+            print(f"  [BENCHMARK RESULT] Single GPU: {single_throughput:.1f} img/s | DataParallel: {dp_throughput:.1f} img/s")
 
-        if dp_throughput > single_throughput * 1.05:
-            print(f"  [MULTI-GPU] DataParallel selected ({dp_throughput:.1f} img/s)")
-            metrics["mode"] = f"DataParallel ({hw['gpu_count']} GPUs)"
-            metrics["selected_throughput"] = dp_throughput
-            return dp_model, metrics
-        else:
-            print(f"  [AUTOMATIC FALLBACK] DataParallel is slower ({dp_throughput:.1f} img/s) than Single GPU ({single_throughput:.1f} img/s) due to GIL/PCI-e overhead.")
-            print(f"  [AUTOMATIC FALLBACK] Automatically falling back to Single GPU mode for maximum throughput!")
-            metrics["mode"] = "Single GPU (Fallback from DP)"
-            metrics["selected_throughput"] = single_throughput
-            return model, metrics
+            if dp_throughput > single_throughput * 1.05:
+                print(f"  [MULTI-GPU] DataParallel selected ({dp_throughput:.1f} img/s)")
+                metrics["mode"] = f"DataParallel ({hw['gpu_count']} GPUs)"
+                metrics["selected_throughput"] = dp_throughput
+                return dp_model, metrics
+            else:
+                print(f"  [AUTOMATIC FALLBACK] DataParallel is slower ({dp_throughput:.1f} img/s) than Single GPU ({single_throughput:.1f} img/s) due to GIL/PCI-e overhead.")
+                print(f"  [AUTOMATIC FALLBACK] Automatically falling back to Single GPU mode for maximum throughput!")
+                metrics["mode"] = "Single GPU (Fallback from DP)"
+                metrics["selected_throughput"] = single_throughput
+                return model, metrics
 
     # Default Single GPU
     print(f"  [HARDWARE] Single GPU Mode Active ({hw['device_name']})")
