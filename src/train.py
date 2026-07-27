@@ -550,6 +550,8 @@ def train(
         }
 
         try:
+            print("  [TRAIN TRACE] eval_model selected, about to call run_validation()...", flush=True)
+            sys.stdout.flush()
             t_val_stage0 = time.perf_counter()
             val_metrics = run_validation(
                 eval_model, val_loader, criterion=criterion,
