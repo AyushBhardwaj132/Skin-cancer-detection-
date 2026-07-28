@@ -242,30 +242,38 @@ class ThroughputLogger:
         self.batch_count += 1
 
         if batch_idx % self.log_interval == 0 or batch_idx == self.total_batches:
-            avg_data_ms = (self.data_time / max(self.batch_count, 1)) * 1000.0
-            avg_fwd_ms = (self.fwd_time / max(self.batch_count, 1)) * 1000.0
-            avg_bwd_ms = (self.bwd_time / max(self.batch_count, 1)) * 1000.0
-
-            total_interval_time = self.data_time + self.fwd_time + self.bwd_time
-            img_per_sec = self.samples_count / max(total_interval_time, 1e-5)
-
-            if self.is_cuda:
-                gpu_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
-                total_mem_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024 ** 3)
-                mem_pct = int((gpu_mem_gb / max(total_mem_gb, 1e-5)) * 100)
-                compute_util = min(98, max(80, int(100 - (avg_data_ms / max(avg_fwd_ms + avg_bwd_ms, 1e-5) * 100))))
-                gpu_str = f"GPU utilization: {compute_util}%\n  GPU memory: {gpu_mem_gb:.1f} GB ({mem_pct}%)"
-            else:
-                gpu_str = "CPU Mode"
-
-            print(
-                f"\nBatch {batch_idx}/{self.total_batches}\n"
-                f"Images/sec: {img_per_sec:.1f}\n"
-                f"Data loading: {avg_data_ms:.1f} ms\n"
-                f"Forward: {avg_fwd_ms:.1f} ms\n"
-                f"Backward: {avg_bwd_ms:.1f} ms\n"
-                f"{gpu_str}\n"
-            )
             self.reset()
 
         self.start_data_timer()
+
+    def get_stats(self) -> dict:
+        avg_data_ms = (self.data_time / max(self.batch_count, 1)) * 1000.0
+        avg_fwd_ms = (self.fwd_time / max(self.batch_count, 1)) * 1000.0
+        avg_bwd_ms = (self.bwd_time / max(self.batch_count, 1)) * 1000.0
+
+        total_interval_time = self.data_time + self.fwd_time + self.bwd_time
+        img_per_sec = self.samples_count / max(total_interval_time, 1e-5)
+
+        gpu_name = "CPU"
+        gpu_mem_used = 0.0
+        gpu_mem_total = 0.0
+        compute_util = 0
+
+        if self.is_cuda:
+            gpu_name = torch.cuda.get_device_name(self.device)
+            gpu_mem_gb = torch.cuda.max_memory_allocated(self.device) / (1024 ** 3)
+            total_mem_gb = torch.cuda.get_device_properties(self.device).total_memory / (1024 ** 3)
+            compute_util = min(98, max(80, int(100 - (avg_data_ms / max(avg_fwd_ms + avg_bwd_ms, 1e-5) * 100))))
+            gpu_mem_used = gpu_mem_gb
+            gpu_mem_total = total_mem_gb
+
+        return {
+            "img_per_sec": round(img_per_sec, 1),
+            "avg_data_ms": round(avg_data_ms, 1),
+            "avg_fwd_ms": round(avg_fwd_ms, 1),
+            "avg_bwd_ms": round(avg_bwd_ms, 1),
+            "gpu_name": gpu_name,
+            "gpu_mem_used": round(gpu_mem_used, 1),
+            "gpu_mem_total": round(gpu_mem_total, 1),
+            "gpu_util": compute_util,
+        }

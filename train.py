@@ -39,6 +39,11 @@ def main():
         help="Run tiny Kaggle verification mode (save, reload, resume test) and exit",
     )
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose step-by-step debug logging",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=None,
@@ -79,6 +84,8 @@ def main():
         config.learning_rate = args.lr
     if args.debug_checkpoint_test:
         config.debug_checkpoint_test = True
+    if args.debug:
+        config.debug = True
 
     print("=" * 80)
     print("ISIC 2024 COMPETITION TRAINING PIPELINE")

@@ -76,6 +76,7 @@ def main() -> None:
     parser.add_argument("--all-folds", action="store_true", help="Train all 5 GroupKFold folds sequentially")
     parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
     parser.add_argument("--debug-checkpoint-test", action="store_true", help="Run tiny Kaggle verification mode and exit")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose step-by-step debug logging")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
@@ -86,6 +87,8 @@ def main() -> None:
     config = get_config(args)
     if args.debug_checkpoint_test:
         config.debug_checkpoint_test = True
+    if args.debug:
+        config.debug = True
 
     print("Immediately before train():")
     print(f"  backbone_name = {config.backbone_name}")

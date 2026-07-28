@@ -18,8 +18,124 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+import json
+import datetime
 import shutil
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def update_status_json(
+    output_dir: Path | None,
+    epoch: int,
+    total_epochs: int,
+    batch: int,
+    total_batches: int,
+    loss: float,
+    avg_loss: float,
+    lr: float,
+    eta_str: str,
+    gpu_memory: str,
+    checkpoint_name: str,
+) -> None:
+    """Atomically write outputs/status.json for live monitoring."""
+    if output_dir is None:
+        return
+    status_data = {
+        "epoch": epoch,
+        "total_epochs": total_epochs,
+        "batch": batch,
+        "total_batches": total_batches,
+        "loss": round(loss, 4),
+        "avg_loss": round(avg_loss, 4),
+        "lr": f"{lr:.2e}",
+        "eta": eta_str,
+        "gpu_memory": gpu_memory,
+        "checkpoint": checkpoint_name,
+        "last_update": datetime.datetime.now().isoformat(),
+    }
+    status_file = output_dir / "status.json"
+    try:
+        tmp_file = status_file.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_file.replace(status_file)
+    except Exception:
+        pass
+
+
+def print_training_dashboard(
+    fold: int,
+    n_splits: int,
+    epoch: int,
+    total_epochs: int,
+    batch: int,
+    total_batches: int,
+    current_loss: float,
+    avg_loss: float,
+    lr: float,
+    hw_stats: dict,
+    elapsed_sec: float,
+    best_pauc: float,
+    last_checkpoint_name: str,
+    last_checkpoint_time: str,
+) -> None:
+    """Objective 2: Render clean, professional training dashboard."""
+    pct = (batch / max(total_batches, 1)) * 100
+    bar_width = 24
+    filled = int(bar_width * (batch / max(total_batches, 1)))
+    progress_bar = "#" * filled + "-" * (bar_width - filled)
+
+    batches_done = (epoch - 1) * total_batches + batch
+    total_run_batches = total_epochs * total_batches
+    batches_remaining = max(0, total_run_batches - batches_done)
+    sec_per_batch = elapsed_sec / max(batch, 1)
+    eta_sec = batches_remaining * sec_per_batch
+
+    elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed_sec))
+    eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_sec))
+
+    gpu_name = hw_stats.get("gpu_name", "CPU")
+    gpu_mem_used = hw_stats.get("gpu_mem_used", 0.0)
+    gpu_mem_total = hw_stats.get("gpu_mem_total", 0.0)
+    gpu_util = hw_stats.get("gpu_util", 0)
+    img_per_sec = hw_stats.get("img_per_sec", 0.0)
+    data_ms = hw_stats.get("avg_data_ms", 0.0)
+    fwd_ms = hw_stats.get("avg_fwd_ms", 0.0)
+    bwd_ms = hw_stats.get("avg_bwd_ms", 0.0)
+
+    print("\n" + "=" * 80, flush=True)
+    print("ISIC 2024 Skin Cancer Detection", flush=True)
+    print(f"Fold {fold} | Epoch {epoch}/{total_epochs}", flush=True)
+    print("=" * 80, flush=True)
+    print(f"\nProgress        : {progress_bar} {pct:.1f}%\n", flush=True)
+    print(f"Batch           : {batch} / {total_batches}", flush=True)
+    print(f"Current Loss    : {current_loss:.4f}", flush=True)
+    print(f"Average Loss    : {avg_loss:.4f}\n", flush=True)
+    print(f"Learning Rate   : {lr:.2e}\n", flush=True)
+
+    if gpu_name != "CPU":
+        print(f"GPU             : {gpu_name}", flush=True)
+        print(f"GPU Memory      : {gpu_mem_used:.1f} / {gpu_mem_total:.1f} GB", flush=True)
+        print(f"GPU Utilization : {gpu_util} %\n", flush=True)
+    else:
+        print("Hardware        : CPU Mode\n", flush=True)
+
+    print(f"Images/sec      : {img_per_sec:.0f}\n", flush=True)
+    print(f"Data Loading    : {data_ms:.1f} ms", flush=True)
+    print(f"Forward         : {fwd_ms:.1f} ms", flush=True)
+    print(f"Backward        : {bwd_ms:.1f} ms\n", flush=True)
+    print(f"Elapsed Time    : {elapsed_str}", flush=True)
+    print(f"ETA             : {eta_str}\n", flush=True)
+    print(f"Current Fold    : {fold} / {n_splits}", flush=True)
+    print(f"Epoch Progress  : {pct:.1f} %\n", flush=True)
+    print("Last Checkpoint : Saved [OK]", flush=True)
+    print(f"Checkpoint File : {last_checkpoint_name}", flush=True)
+    print(f"Checkpoint Time : {last_checkpoint_time}\n", flush=True)
+    print(f"Best Validation pAUC : {best_pauc:.4f}\n", flush=True)
+    print("=" * 80 + "\n", flush=True)
+    sys.stdout.flush()
 
 from src.config import Config
 from src.dataset import ISICDataset
@@ -165,8 +281,13 @@ def _train_one_epoch(
     optimizer,
     scaler,
     device,
+    fold: int = 0,
+    n_splits: int = 5,
+    epoch: int = 1,
+    total_epochs: int = 10,
+    best_pauc: float = 0.0,
     ema=None,
-    pbar_desc="",
+    pbar_desc: str = "",
     use_metadata: bool = True,
     use_mixup: bool = False,
     mixup_alpha: float = 0.4,
@@ -175,12 +296,15 @@ def _train_one_epoch(
     use_fp16: bool = True,
     checkpoint_batch_interval: int = 500,
     save_intra_epoch_checkpoint: callable | None = None,
+    output_dir: Path | None = None,
+    debug: bool = False,
 ):
-    """Train for one epoch with progress bar, AMP, EMA, optional MixUp/CutMix, and intra-epoch batch checkpointing."""
+    """Train for one epoch with clean dashboard, AMP, EMA, and optional debug tracing."""
     model.train()
     running_loss = 0.0
     running_samples = 0
     use_amp = use_fp16 and device.type == "cuda"
+    t_epoch_start = time.perf_counter()
 
     throughput_logger = ThroughputLogger(
         total_batches=len(dataloader),
@@ -190,78 +314,61 @@ def _train_one_epoch(
     )
 
     total_batches = len(dataloader)
-    print(f"  [TRAIN LOOP] Starting training loop across {total_batches} batches...", flush=True)
-    sys.stdout.flush()
+    if debug:
+        print(f"  [TRAIN LOOP] Starting training loop across {total_batches} batches...", flush=True)
 
-    t_iter_fetch0 = time.perf_counter()
     data_iter = iter(dataloader)
     batch_idx = 0
+    last_ckpt_name = f"last_checkpoint_fold{fold}.pt"
+    last_ckpt_time = datetime.datetime.now().strftime("%H:%M:%S")
 
     while True:
         batch_idx += 1
 
         # 1. DataLoader fetch
-        print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Fetching next batch from DataLoader worker...", flush=True)
-        sys.stdout.flush()
+        if debug:
+            print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Fetching next batch from DataLoader worker...", flush=True)
         t_dl_start = time.perf_counter()
         try:
             batch = next(data_iter)
-            t_dl_end = time.perf_counter()
-            dl_elapsed = t_dl_end - t_dl_start
+            dl_elapsed = time.perf_counter() - t_dl_start
             throughput_logger.end_data_timer()
-            print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Batch fetched in {dl_elapsed:.4f}s", flush=True)
-            if dl_elapsed > 5.0:
-                print(f"  [WARN TRAIN STEP] DataLoader fetch took {dl_elapsed:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
+            if debug:
+                print(f"  [TRAIN BATCH {batch_idx}/{total_batches}] Batch fetched in {dl_elapsed:.4f}s", flush=True)
         except StopIteration:
-            print(f"  [TRAIN LOOP] Reached end of DataLoader at batch {batch_idx - 1}", flush=True)
-            sys.stdout.flush()
+            if debug:
+                print(f"  [TRAIN LOOP] Reached end of DataLoader at batch {batch_idx - 1}", flush=True)
             break
         except Exception as dl_err:
             print(f"  [ERROR TRAIN STEP 1] DataLoader fetch raised exception: {dl_err}", flush=True)
-            sys.stdout.flush()
             raise dl_err
 
         # 2. Batch transfer to GPU
-        print(f"  [TRAIN STEP 2] Transferring batch tensors to device ({device})...", flush=True)
-        sys.stdout.flush()
-        t_gpu_start = time.perf_counter()
+        if debug:
+            print(f"  [TRAIN STEP 2] Transferring batch tensors to device ({device})...", flush=True)
         images = batch["image"].to(device, non_blocking=True)
         metadata = batch["metadata"].to(device, non_blocking=True) if ("metadata" in batch and batch["metadata"] is not None) else None
         labels = batch["target"].to(device, non_blocking=True).float().unsqueeze(1)
-        t_gpu_end = time.perf_counter()
-        gpu_elapsed = t_gpu_end - t_gpu_start
-        print(f"  [TRAIN STEP 2] Batch transferred to device in {gpu_elapsed:.4f}s", flush=True)
-        if gpu_elapsed > 5.0:
-            print(f"  [WARN TRAIN STEP] Batch transfer took {gpu_elapsed:.2f}s (>5s limit)!", flush=True)
-        sys.stdout.flush()
 
         # 3. Optimizer zero_grad
-        print(f"  [TRAIN STEP 3] Zeroing optimizer gradients...", flush=True)
-        sys.stdout.flush()
-        t_zg_start = time.perf_counter()
+        if debug:
+            print(f"  [TRAIN STEP 3] Zeroing optimizer gradients...", flush=True)
         optimizer.zero_grad(set_to_none=True)
-        t_zg_end = time.perf_counter()
-        zg_elapsed = t_zg_end - t_zg_start
-        print(f"  [TRAIN STEP 3] Optimizer zero_grad completed in {zg_elapsed:.4f}s", flush=True)
-        if zg_elapsed > 5.0:
-            print(f"  [WARN TRAIN STEP] Optimizer zero_grad took {zg_elapsed:.2f}s (>5s limit)!", flush=True)
-        sys.stdout.flush()
 
         # 4. MixUp / CutMix & Forward pass & Loss computation
-        print(f"  [TRAIN STEP 4] Executing Forward pass & Loss computation (AMP={use_amp})...", flush=True)
-        sys.stdout.flush()
+        if debug:
+            print(f"  [TRAIN STEP 4] Executing Forward pass & Loss computation (AMP={use_amp})...", flush=True)
         t_fwd_start = time.perf_counter()
         with torch.amp.autocast("cuda", enabled=use_amp):
             if use_mixup and np.random.rand() < 0.5:
-                print("    [MIXUP] Applying MixUp augmentation...", flush=True)
-                sys.stdout.flush()
+                if debug:
+                    print("    [MIXUP] Applying MixUp augmentation...", flush=True)
                 images, labels_a, labels_b, lam = mixup_data(images, labels, alpha=mixup_alpha)
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = lam * criterion(logits, labels_a) + (1 - lam) * criterion(logits, labels_b)
             elif use_cutmix and np.random.rand() < 0.5:
-                print("    [CUTMIX] Applying CutMix augmentation...", flush=True)
-                sys.stdout.flush()
+                if debug:
+                    print("    [CUTMIX] Applying CutMix augmentation...", flush=True)
                 images, labels_a, labels_b, lam = cutmix_data(images, labels, alpha=cutmix_alpha)
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = lam * criterion(logits, labels_a) + (1 - lam) * criterion(logits, labels_b)
@@ -269,130 +376,93 @@ def _train_one_epoch(
                 logits = model(images, metadata) if use_metadata else model(images)
                 loss = criterion(logits, labels)
 
-        t_fwd_end = time.perf_counter()
-        fwd_time = t_fwd_end - t_fwd_start
-        print(f"  [TRAIN STEP 4] Forward pass & Loss completed in {fwd_time:.4f}s", flush=True)
-        if fwd_time > 5.0:
-            print(f"  [WARN TRAIN STEP] Forward pass took {fwd_time:.2f}s (>5s limit)!", flush=True)
-        sys.stdout.flush()
+        fwd_time = time.perf_counter() - t_fwd_start
 
         # 5. Backward Pass & Scaler Step
-        print(f"  [TRAIN STEP 5] Executing Backward Pass & Optimizer Step...", flush=True)
-        sys.stdout.flush()
+        if debug:
+            print(f"  [TRAIN STEP 5] Executing Backward Pass & Optimizer Step...", flush=True)
         t_bwd_start = time.perf_counter()
         if use_amp and scaler is not None:
-            print("    [BACKWARD 1/4] scaler.scale(loss).backward()...", flush=True)
-            sys.stdout.flush()
-            t_b0 = time.perf_counter()
             scaler.scale(loss).backward()
-            t_b1 = time.perf_counter()
-            print(f"    [BACKWARD 1/4] Backward completed in {t_b1 - t_b0:.4f}s", flush=True)
-            if (t_b1 - t_b0) > 5.0:
-                print(f"    [WARN TRAIN STEP] Backward step took {t_b1 - t_b0:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
-
-            print("    [BACKWARD 2/4] scaler.unscale_(optimizer)...", flush=True)
-            sys.stdout.flush()
-            t_b2 = time.perf_counter()
             scaler.unscale_(optimizer)
-            t_b3 = time.perf_counter()
-            print(f"    [BACKWARD 2/4] unscale_ completed in {t_b3 - t_b2:.4f}s", flush=True)
-            if (t_b3 - t_b2) > 5.0:
-                print(f"    [WARN TRAIN STEP] unscale_ step took {t_b3 - t_b2:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
-
-            print("    [BACKWARD 3/4] clip_grad_norm_...", flush=True)
-            sys.stdout.flush()
-            t_b4 = time.perf_counter()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            t_b5 = time.perf_counter()
-            print(f"    [BACKWARD 3/4] clip_grad_norm_ completed in {t_b5 - t_b4:.4f}s", flush=True)
-            if (t_b5 - t_b4) > 5.0:
-                print(f"    [WARN TRAIN STEP] clip_grad_norm_ took {t_b5 - t_b4:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
-
-            print("    [BACKWARD 4/4] scaler.step(optimizer) & scaler.update()...", flush=True)
-            sys.stdout.flush()
-            t_b6 = time.perf_counter()
             scaler.step(optimizer)
             scaler.update()
-            t_b7 = time.perf_counter()
-            print(f"    [BACKWARD 4/4] scaler.step & update completed in {t_b7 - t_b6:.4f}s", flush=True)
-            if (t_b7 - t_b6) > 5.0:
-                print(f"    [WARN TRAIN STEP] scaler.step & update took {t_b7 - t_b6:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
         else:
-            print("    [BACKWARD 1/3] loss.backward()...", flush=True)
-            sys.stdout.flush()
-            t_b0 = time.perf_counter()
             loss.backward()
-            t_b1 = time.perf_counter()
-            print(f"    [BACKWARD 1/3] Backward completed in {t_b1 - t_b0:.4f}s", flush=True)
-            if (t_b1 - t_b0) > 5.0:
-                print(f"    [WARN TRAIN STEP] Backward step took {t_b1 - t_b0:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
-
-            print("    [BACKWARD 2/3] clip_grad_norm_...", flush=True)
-            sys.stdout.flush()
-            t_b2 = time.perf_counter()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            t_b3 = time.perf_counter()
-            print(f"    [BACKWARD 2/3] clip_grad_norm_ completed in {t_b3 - t_b2:.4f}s", flush=True)
-            if (t_b3 - t_b2) > 5.0:
-                print(f"    [WARN TRAIN STEP] clip_grad_norm_ took {t_b3 - t_b2:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
-
-            print("    [BACKWARD 3/3] optimizer.step()...", flush=True)
-            sys.stdout.flush()
-            t_b4 = time.perf_counter()
             optimizer.step()
-            t_b5 = time.perf_counter()
-            print(f"    [BACKWARD 3/3] optimizer.step completed in {t_b5 - t_b4:.4f}s", flush=True)
-            if (t_b5 - t_b4) > 5.0:
-                print(f"    [WARN TRAIN STEP] optimizer.step took {t_b5 - t_b4:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
 
-        t_bwd_end = time.perf_counter()
-        bwd_time = t_bwd_end - t_bwd_start
-        print(f"  [TRAIN STEP 5] Backward pass & optimizer step completed in {bwd_time:.4f}s", flush=True)
-        if bwd_time > 5.0:
-            print(f"  [WARN TRAIN STEP] Backward pass & optimizer step took {bwd_time:.2f}s (>5s limit)!", flush=True)
-        sys.stdout.flush()
+        bwd_time = time.perf_counter() - t_bwd_start
 
         # 6. EMA Update
         if ema is not None:
-            print(f"  [TRAIN STEP 6] Updating Model EMA...", flush=True)
-            sys.stdout.flush()
-            t_ema_start = time.perf_counter()
+            if debug:
+                print(f"  [TRAIN STEP 6] Updating Model EMA...", flush=True)
             raw_model = model.module if hasattr(model, "module") else model
             ema.update(raw_model)
-            t_ema_end = time.perf_counter()
-            ema_elapsed = t_ema_end - t_ema_start
-            print(f"  [TRAIN STEP 6] EMA update completed in {ema_elapsed:.4f}s", flush=True)
-            if ema_elapsed > 5.0:
-                print(f"  [WARN TRAIN STEP] EMA update took {ema_elapsed:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
 
         # 7. Logging & Checkpoint Logic
         batch_size = images.size(0)
-        running_loss += loss.item() * batch_size
+        curr_loss = loss.item()
+        running_loss += curr_loss * batch_size
         running_samples += batch_size
+        avg_loss = running_loss / max(running_samples, 1)
 
-        print(f"  [TRAIN STEP 7] Logging throughput batch stats...", flush=True)
-        sys.stdout.flush()
-        t_log_start = time.perf_counter()
         throughput_logger.log_batch(
             batch_idx=batch_idx,
             fwd_time=fwd_time,
             bwd_time=bwd_time,
             batch_size=batch_size,
         )
-        t_log_end = time.perf_counter()
-        log_elapsed = t_log_end - t_log_start
-        print(f"  [TRAIN STEP 7] Logging completed in {log_elapsed:.4f}s", flush=True)
-        if log_elapsed > 5.0:
-            print(f"  [WARN TRAIN STEP] Logging took {log_elapsed:.2f}s (>5s limit)!", flush=True)
-        sys.stdout.flush()
+
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        # Objective 2 & 8: Every 100 batches print ONE clean dashboard & update outputs/status.json
+        if batch_idx % 100 == 0 or batch_idx == total_batches:
+            hw_stats = throughput_logger.get_stats()
+            elapsed_sec = time.perf_counter() - t_epoch_start
+
+            if not debug:
+                print_training_dashboard(
+                    fold=fold,
+                    n_splits=n_splits,
+                    epoch=epoch,
+                    total_epochs=total_epochs,
+                    batch=batch_idx,
+                    total_batches=total_batches,
+                    current_loss=curr_loss,
+                    avg_loss=avg_loss,
+                    lr=current_lr,
+                    hw_stats=hw_stats,
+                    elapsed_sec=elapsed_sec,
+                    best_pauc=best_pauc,
+                    last_checkpoint_name=last_ckpt_name,
+                    last_checkpoint_time=last_ckpt_time,
+                )
+
+            # Live status.json file update
+            batches_done = (epoch - 1) * total_batches + batch_idx
+            total_run_batches = total_epochs * total_batches
+            batches_remaining = max(0, total_run_batches - batches_done)
+            sec_per_batch = elapsed_sec / max(batch_idx, 1)
+            eta_sec = batches_remaining * sec_per_batch
+            eta_str = time.strftime("%H:%M:%S", time.gmtime(eta_sec))
+            gpu_mem_str = f"{hw_stats.get('gpu_mem_used', 0.0):.1f} / {hw_stats.get('gpu_mem_total', 0.0):.1f} GB" if hw_stats.get("gpu_name") != "CPU" else "CPU Mode"
+
+            update_status_json(
+                output_dir=output_dir,
+                epoch=epoch,
+                total_epochs=total_epochs,
+                batch=batch_idx,
+                total_batches=total_batches,
+                loss=curr_loss,
+                avg_loss=avg_loss,
+                lr=current_lr,
+                eta_str=eta_str,
+                gpu_memory=gpu_mem_str,
+                checkpoint_name=last_ckpt_name,
+            )
 
         if (
             save_intra_epoch_checkpoint is not None
@@ -400,19 +470,13 @@ def _train_one_epoch(
             and batch_idx > 0
             and batch_idx % checkpoint_batch_interval == 0
         ):
-            print(f"  [TRAIN STEP 8] Saving intra-epoch checkpoint at batch {batch_idx}/{total_batches}...", flush=True)
-            sys.stdout.flush()
-            t_ckpt_start = time.perf_counter()
+            if debug:
+                print(f"  [TRAIN STEP 8] Saving intra-epoch checkpoint at batch {batch_idx}/{total_batches}...", flush=True)
             save_intra_epoch_checkpoint(
                 batch_idx,
                 total_batches,
             )
-            t_ckpt_end = time.perf_counter()
-            ckpt_elapsed = t_ckpt_end - t_ckpt_start
-            print(f"  [TRAIN STEP 8] Intra-epoch checkpoint saved in {ckpt_elapsed:.4f}s", flush=True)
-            if ckpt_elapsed > 5.0:
-                print(f"  [WARN TRAIN STEP] Intra-epoch checkpoint took {ckpt_elapsed:.2f}s (>5s limit)!", flush=True)
-            sys.stdout.flush()
+            last_ckpt_time = datetime.datetime.now().strftime("%H:%M:%S")
 
     return running_loss / max(running_samples, 1)
 
@@ -595,6 +659,7 @@ def train(
     limit_val: int | None = None,
 ):
     """Full Competition Training pipeline supporting Mixed Precision, EMA, GroupKFold, and Checkpoint Resuming."""
+    pipeline_start_time = time.time()
     config = config or Config()
     seed_everything(config.seed)
 
@@ -660,18 +725,19 @@ def train(
         res_batch = ckpt.get("batch_idx", 0)
         res_fold = ckpt.get("fold", fold_idx)
 
-        print("=" * 49, flush=True)
-        print("[RESUME VERIFIED]", flush=True)
-        print(f"Resume directory:            {config.output_dir.resolve()}", flush=True)
-        print(f"Checkpoint path:             {target_resume_path.resolve()}", flush=True)
-        print(f"Checkpoint exists:           YES ({target_resume_path.exists()})", flush=True)
-        print(f"Checkpoint size:             {ckpt_size_mb:.2f} MB", flush=True)
-        print(f"Epoch:                       {res_epoch}", flush=True)
-        print(f"Fold:                        {res_fold}", flush=True)
-        print(f"Batch:                       {res_batch}", flush=True)
-        print(f"training_state.json loaded:  {'YES' if state_file.exists() else 'NO'}", flush=True)
-        print(f"Resume successful:           YES", flush=True)
-        print("=" * 49 + "\n", flush=True)
+        timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print("\n" + "=" * 50, flush=True)
+        print("RESUME SUCCESSFUL", flush=True)
+        print("=" * 50, flush=True)
+        print(f"Checkpoint Loaded : {target_resume_path.name}", flush=True)
+        print(f"Fold              : {res_fold}", flush=True)
+        print(f"Epoch             : {res_epoch}", flush=True)
+        print(f"Batch             : {res_batch}", flush=True)
+        print("Optimizer Restored: [OK]", flush=True)
+        print("Scheduler Restored: [OK]", flush=True)
+        print("EMA Restored      : [OK]", flush=True)
+        print(f"Resume Time       : {timestamp_str}", flush=True)
+        print("=" * 50 + "\n", flush=True)
         sys.stdout.flush()
 
         if fold_idx in training_state.completed_folds:
@@ -811,6 +877,11 @@ def train(
 
         train_loss = _train_one_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
+            fold=fold_idx,
+            n_splits=config.n_splits,
+            epoch=epoch,
+            total_epochs=config.num_epochs,
+            best_pauc=best_pauc if best_pauc != float("-inf") else 0.0,
             ema=ema,
             pbar_desc=f"Epoch {epoch}/{config.num_epochs} [Train]",
             use_metadata=config.use_metadata,
@@ -821,9 +892,9 @@ def train(
             use_fp16=config.use_fp16,
             checkpoint_batch_interval=getattr(config, "checkpoint_batch_interval", 500),
             save_intra_epoch_checkpoint=save_intra_epoch_checkpoint,
+            output_dir=config.output_dir,
+            debug=getattr(config, "debug", False),
         )
-        print(f"\n[1/8] Training finished | train_loss={train_loss:.4f}", flush=True)
-        sys.stdout.flush()
 
         # Save LAST checkpoint & update training_state.json IMMEDIATELY after training (BEFORE validation)
         training_state.current_fold = fold_idx
@@ -832,7 +903,6 @@ def train(
         if best_pauc != float("-inf") and not np.isnan(best_pauc):
             training_state.best_pauc = best_pauc
         training_state.save(config.output_dir)
-        print("[OK] Resume information saved", flush=True)
 
         initial_checkpoint_payload = {
             "epoch": epoch,
@@ -856,11 +926,7 @@ def train(
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
             sync_file(last_root_ckpt_path)
-        print("[6/8] Saving last checkpoint", flush=True)
-        sys.stdout.flush()
 
-        print("[2/8] Starting validation", flush=True)
-        sys.stdout.flush()
         eval_model = ema.module if ema is not None else raw_model
 
         val_metrics = {
@@ -872,34 +938,15 @@ def train(
         }
 
         try:
-            print("  [TRAIN TRACE] eval_model selected, about to call run_validation()...", flush=True)
-            sys.stdout.flush()
             t_val_stage0 = time.perf_counter()
             val_metrics = run_validation(
                 eval_model, val_loader, criterion=criterion,
                 device=device, use_metadata=config.use_metadata,
                 use_tta=getattr(config, "use_tta", False),
+                debug=getattr(config, "debug", False),
             )
             t_val_stage1 = time.perf_counter()
-            print(f"[3/8] Validation finished in {t_val_stage1 - t_val_stage0:.2f}s | val_loss={val_metrics.get('loss', float('nan')):.4f}", flush=True)
-            sys.stdout.flush()
 
-            roc_val = val_metrics.get("roc_auc", float("nan"))
-            pauc_val = val_metrics.get("pauc", float("nan"))
-
-            if not np.isnan(roc_val):
-                print(f"[4/8] Computing ROC-AUC: {roc_val:.4f}", flush=True)
-            else:
-                print("[4/8] Computing ROC-AUC: N/A", flush=True)
-            sys.stdout.flush()
-
-            if not np.isnan(pauc_val):
-                print(f"[5/8] Computing pAUC: {pauc_val:.4f}", flush=True)
-            else:
-                print("[5/8] Computing pAUC: N/A", flush=True)
-            sys.stdout.flush()
-
-            # Auto-generate evaluation visualization artifacts (ROC, PR, Confusion Matrix)
             if "y_true" in val_metrics and "y_score" in val_metrics:
                 generate_evaluation_artifacts(
                     val_metrics["y_true"],
@@ -909,8 +956,8 @@ def train(
                     threshold=val_metrics.get("optimal_threshold", 0.5),
                 )
         except Exception as val_err:
-            print(f"[WARN] Validation or metric computation failed: {val_err}", flush=True)
-            print(f"[WARN] Continuing pipeline cleanly without freezing.", flush=True)
+            if getattr(config, "debug", False):
+                print(f"[WARN] Validation computation failed: {val_err}", flush=True)
 
         sys.stdout.flush()
         scheduler.step()
@@ -928,21 +975,27 @@ def train(
         }
         history.append(epoch_result)
 
-        print(
-            f"Epoch {epoch:>3d} | "
-            f"train_loss={train_loss:.4f} | "
-            f"val_loss={val_metrics.get('loss', float('nan')):.4f} | "
-            f"roc_auc={val_metrics.get('roc_auc', float('nan')):.4f} | "
-            f"pAUC={val_metrics.get('pauc', float('nan')):.4f} | "
-            f"opt_thresh={val_metrics.get('optimal_threshold', 0.5):.2f} | "
-            f"lr={epoch_result['learning_rate']:.2e} | "
-            f"time={epoch_time:.1f}s",
-            flush=True,
-        )
-
         current_score = val_metrics.get("pauc", val_metrics.get("roc_auc", float("-inf")))
         if np.isnan(current_score):
             current_score = float("-inf")
+
+        is_best = current_score > best_pauc
+        is_best_str = "YES" if is_best else "NO"
+        epoch_time_str = time.strftime("%H:%M:%S", time.gmtime(epoch_time))
+
+        # Objective 5: Structured Final Epoch Summary
+        print("\n" + "=" * 50, flush=True)
+        print(f"EPOCH {epoch}/{config.num_epochs} SUMMARY", flush=True)
+        print("=" * 50, flush=True)
+        print(f"Training Loss        : {train_loss:.4f}", flush=True)
+        print(f"Validation Loss      : {val_metrics.get('loss', float('nan')):.4f}", flush=True)
+        print(f"Validation pAUC      : {val_metrics.get('pauc', float('nan')):.4f}", flush=True)
+        print(f"ROC AUC              : {val_metrics.get('roc_auc', float('nan')):.4f}", flush=True)
+        print(f"Learning Rate        : {epoch_result['learning_rate']:.2e}", flush=True)
+        print(f"Epoch Time           : {epoch_time_str}", flush=True)
+        print(f"Best Model Saved?    : {is_best_str}", flush=True)
+        print("Checkpoint Saved?    : YES", flush=True)
+        print("=" * 50 + "\n", flush=True)
 
         # Update Last Checkpoint with full validation metrics
         checkpoint_payload = {
@@ -974,9 +1027,8 @@ def train(
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
             sync_file(last_root_ckpt_path)
-        print("[OK] Checkpoint saved", flush=True)
 
-        if current_score > best_pauc:
+        if is_best:
             best_pauc = current_score
             best_auc = val_metrics.get("roc_auc", float("nan"))
             checkpoint_payload["best_val_pauc"] = best_pauc
@@ -985,6 +1037,7 @@ def train(
             if best_root_ckpt_path.resolve() != best_checkpoint_path.resolve():
                 shutil.copy2(best_checkpoint_path, best_root_ckpt_path)
                 sync_file(best_root_ckpt_path)
+            training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
             print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}", flush=True)
             training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
         else:
@@ -1057,6 +1110,21 @@ def train(
     print(f"  Validation Recall   : {val_rec:.4f}")
     print(f"  Validation F1 Score : {val_f1:.4f}")
     print(f"{'='*80}\n")
+
+    total_time_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - pipeline_start_time))
+
+    print("\n" + "=" * 50, flush=True)
+    print("TRAINING COMPLETE", flush=True)
+    print("=" * 50, flush=True)
+    print(f"Total Time              : {total_time_str}", flush=True)
+    print(f"Best Fold               : Fold {fold_idx}", flush=True)
+    print(f"Best pAUC               : {val_pauc:.4f}", flush=True)
+    print(f"Checkpoint Location     : {config.checkpoint_dir.resolve()}", flush=True)
+    print(f"Best Model Location     : {target_eval_ckpt.resolve()}", flush=True)
+    print(f"Training Curves Location: {config.figures_dir.resolve()}", flush=True)
+    print(f"Evaluation Folder       : {(config.output_dir / 'figures').resolve()}", flush=True)
+    print("=" * 50 + "\n", flush=True)
+    sys.stdout.flush()
 
     return {
         "history": history,

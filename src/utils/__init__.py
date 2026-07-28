@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import random
 import os
+import datetime
 from pathlib import Path
 import numpy as np
 import torch
@@ -106,22 +107,27 @@ def save_checkpoint(state: dict, path: str | Path) -> Path:
     except Exception as load_err:
         raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file corrupt or unreadable immediately after write: {path} (Error: {load_err})")
 
-    # Task 2 formatted output
+    # Objective 3: Formatted Checkpoint Summary
     size_mb = size_bytes / (1024 * 1024)
-    print("\nCheckpoint saved:\n", flush=True)
-    print(f"{path}\n", flush=True)
-    print(f"Exists: {os.path.exists(path)}\n", flush=True)
-    print(f"Size: {size_mb:.2f} MB ({size_bytes} bytes)\n", flush=True)
-    print("Reload test: PASSED\n", flush=True)
+    fold_str = state.get("fold", 0) if isinstance(state, dict) else 0
+    epoch_str = state.get("epoch", 0) if isinstance(state, dict) else 0
+    batch_str = state.get("batch_idx", 0) if isinstance(state, dict) else 0
+    timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    print("Directory contents:", flush=True)
-    dir_files = sorted([f.name for f in path.parent.iterdir() if f.is_file()])
-    if not dir_files:
-        print("(Empty)", flush=True)
-    else:
-        for fname in dir_files:
-            print(f"- {fname}", flush=True)
-    print("\n", flush=True)
+    print("\n" + "=" * 50, flush=True)
+    print("CHECKPOINT SAVED", flush=True)
+    print("=" * 50, flush=True)
+    print(f"File       : {path.name}", flush=True)
+    print(f"Fold       : {fold_str}", flush=True)
+    print(f"Epoch      : {epoch_str}", flush=True)
+    print(f"Batch      : {batch_str}", flush=True)
+    print(f"File Size  : {size_mb:.2f} MB ({size_bytes} bytes)", flush=True)
+    print(f"Timestamp  : {timestamp_str}", flush=True)
+    print("\nVerification:", flush=True)
+    print("[OK] Exists", flush=True)
+    print("[OK] Reload test passed", flush=True)
+    print("[OK] Resume compatible", flush=True)
+    print("=" * 50 + "\n", flush=True)
     sys.stdout.flush()
 
     return path

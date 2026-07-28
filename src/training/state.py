@@ -90,22 +90,4 @@ class TrainingState:
         except Exception as json_err:
             raise RuntimeError(f"[CRITICAL FAILURE] training_state.json is corrupt or unreadable immediately after write: {state_path} (Error: {json_err})")
 
-        # Task 2 formatted output
-        size_mb = size_bytes / (1024 * 1024)
-        print("\nCheckpoint saved:\n", flush=True)
-        print(f"{state_path}\n", flush=True)
-        print(f"Exists: {os.path.exists(state_path)}\n", flush=True)
-        print(f"Size: {size_mb:.4f} MB ({size_bytes} bytes)\n", flush=True)
-        print("Reload test: PASSED\n", flush=True)
-
-        print("Directory contents:", flush=True)
-        dir_files = sorted([f.name for f in state_path.parent.iterdir() if f.is_file()])
-        if not dir_files:
-            print("(Empty)", flush=True)
-        else:
-            for fname in dir_files:
-                print(f"- {fname}", flush=True)
-        print("\n", flush=True)
-        sys.stdout.flush()
-
         return state_path
