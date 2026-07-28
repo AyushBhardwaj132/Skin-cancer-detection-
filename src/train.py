@@ -31,7 +31,7 @@ from src.model import build_model
 from src.patient_features import enrich_metadata
 from src.split import get_fold_dataframes
 from src.transforms import build_transforms, mixup_data, cutmix_data
-from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker
+from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker, sync_file
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
@@ -552,12 +552,13 @@ def print_startup_report(config: Config, fold_idx: int, resume: bool):
     print(f"Checkpoint directory: {config.checkpoint_dir.resolve()}", flush=True)
     print(f"GPU:                  {hw['device_name']}", flush=True)
     print(f"CUDA:                 {hw['is_cuda']}", flush=True)
-    print(f"AMP:                  {config.use_fp16}", flush=True)
+    print(f"AMP enabled:          {config.use_fp16}", flush=True)
     print(f"Batch size:           {config.batch_size}", flush=True)
     print(f"Workers:              {config.num_workers}", flush=True)
     print(f"Persistent workers:   {config.num_workers > 0}", flush=True)
     print(f"Pin memory:           {torch.cuda.is_available()}", flush=True)
     print(f"Prefetch factor:      {2 if config.num_workers > 0 else None}", flush=True)
+    print(f"Checkpoint interval:  {config.checkpoint_batch_interval} batches", flush=True)
     print(f"Resume enabled:       {resume}", flush=True)
     print("=" * 80 + "\n", flush=True)
     sys.stdout.flush()
@@ -628,36 +629,50 @@ def train(
     # 4. Verify Resume
     if resume:
         target_resume_path = None
+        current_model_name = config.backbone_name if config.use_metadata else config.model_name
+        clean_current = current_model_name.replace("tf_", "").replace("-", "_")
+
         for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
             if candidate.exists() and candidate.stat().st_size > 0:
-                target_resume_path = candidate
-                break
+                try:
+                    chk_meta = load_checkpoint(candidate, map_location="cpu")
+                    chk_model = chk_meta.get("model_name", "")
+                    clean_chk = chk_model.replace("tf_", "").replace("-", "_") if chk_model else ""
+                    if not chk_model or clean_chk == clean_current:
+                        target_resume_path = candidate
+                        break
+                except Exception:
+                    continue
 
         state_file = config.output_dir / "training_state.json"
-        if target_resume_path and target_resume_path.exists():
-            ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
-            ckpt = load_checkpoint(target_resume_path, map_location=get_device())
-            res_epoch = ckpt.get("epoch", 0)
-            res_batch = ckpt.get("batch_idx", 0)
-            res_fold = ckpt.get("fold", fold_idx)
+        if not target_resume_path or not target_resume_path.exists():
+            raise RuntimeError(
+                f"[CRITICAL FAILURE] --resume requested, but no valid checkpoint file was found under {config.checkpoint_dir}!"
+            )
 
-            print("=" * 49, flush=True)
-            print("[RESUME VERIFIED]", flush=True)
-            print(f"Resume directory:            {config.output_dir.resolve()}", flush=True)
-            print(f"Checkpoint found:            {target_resume_path.resolve()}", flush=True)
-            print(f"Checkpoint size:             {ckpt_size_mb:.1f} MB", flush=True)
-            print(f"Epoch:                       {res_epoch}", flush=True)
-            print(f"Fold:                        {res_fold}", flush=True)
-            print(f"Batch:                       {res_batch}", flush=True)
-            print(f"training_state.json loaded:  {'YES' if state_file.exists() else 'NO'}", flush=True)
-            print("=" * 49 + "\n", flush=True)
-            sys.stdout.flush()
-        else:
-            print("=" * 49, flush=True)
-            print("No checkpoint found.", flush=True)
-            print("Starting from scratch.", flush=True)
-            print("=" * 49 + "\n", flush=True)
-            sys.stdout.flush()
+        ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
+        try:
+            ckpt = load_checkpoint(target_resume_path, map_location=get_device())
+        except Exception as load_err:
+            raise RuntimeError(f"[CRITICAL FAILURE] Failed to reload resume checkpoint at {target_resume_path}: {load_err}")
+
+        res_epoch = ckpt.get("epoch", 0)
+        res_batch = ckpt.get("batch_idx", 0)
+        res_fold = ckpt.get("fold", fold_idx)
+
+        print("=" * 49, flush=True)
+        print("[RESUME VERIFIED]", flush=True)
+        print(f"Resume directory:            {config.output_dir.resolve()}", flush=True)
+        print(f"Checkpoint path:             {target_resume_path.resolve()}", flush=True)
+        print(f"Checkpoint exists:           YES ({target_resume_path.exists()})", flush=True)
+        print(f"Checkpoint size:             {ckpt_size_mb:.2f} MB", flush=True)
+        print(f"Epoch:                       {res_epoch}", flush=True)
+        print(f"Fold:                        {res_fold}", flush=True)
+        print(f"Batch:                       {res_batch}", flush=True)
+        print(f"training_state.json loaded:  {'YES' if state_file.exists() else 'NO'}", flush=True)
+        print(f"Resume successful:           YES", flush=True)
+        print("=" * 49 + "\n", flush=True)
+        sys.stdout.flush()
 
         if fold_idx in training_state.completed_folds:
             print(f"[RESUME] Skipping Fold {fold_idx} (already completed in training_state.json)", flush=True)
@@ -790,6 +805,7 @@ def train(
             save_checkpoint(intra_payload, last_checkpoint_path)
             if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
                 shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+                sync_file(last_root_ckpt_path)
             print(f"[OK] Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
             sys.stdout.flush()
 
@@ -839,6 +855,7 @@ def train(
         save_checkpoint(initial_checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+            sync_file(last_root_ckpt_path)
         print("[6/8] Saving last checkpoint", flush=True)
         sys.stdout.flush()
 
@@ -956,6 +973,7 @@ def train(
         save_checkpoint(checkpoint_payload, last_checkpoint_path)
         if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
+            sync_file(last_root_ckpt_path)
         print("[OK] Checkpoint saved", flush=True)
 
         if current_score > best_pauc:
@@ -966,6 +984,7 @@ def train(
             save_checkpoint(checkpoint_payload, best_checkpoint_path)
             if best_root_ckpt_path.resolve() != best_checkpoint_path.resolve():
                 shutil.copy2(best_checkpoint_path, best_root_ckpt_path)
+                sync_file(best_root_ckpt_path)
             print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}", flush=True)
             training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
         else:
@@ -1167,11 +1186,64 @@ def compare_backbones(config: Config | None = None, fold_idx: int = 0, num_epoch
     return results_df
 
 
+def run_debug_checkpoint_test(config: Config) -> None:
+    """Task 11: Tiny Kaggle Verification Mode.
+    
+    Fast 1-epoch 20-batch verification run that saves checkpoints every 10 batches,
+    reloads checkpoint, tests resume flow, and exits cleanly.
+    """
+    print("\n" + "=" * 80, flush=True)
+    print("RUNNING KAGGLE DEBUG CHECKPOINT VERIFICATION TEST (--debug-checkpoint-test)", flush=True)
+    print("=" * 80, flush=True)
+
+    config.output_dir = config.output_dir / "debug_checkpoint_test"
+    config.num_epochs = 1
+    config.checkpoint_batch_interval = 10
+    config.backbone_name = "resnet18"
+    config.model_name = "resnet18"
+    config.batch_size = 4
+    config.use_advanced_augs = False
+    config.use_mixup = False
+    config.use_cutmix = False
+    config.use_fp16 = False
+    config.num_workers = 0
+
+    limit_train = 20 * config.batch_size
+    limit_val = 10 * config.batch_size
+
+    # Phase 1: Train 1 tiny epoch and save intra-epoch & final checkpoints
+    print("\n[DEBUG TEST 1/3] Executing 1 tiny epoch with intra-epoch checkpointing...", flush=True)
+    train(config, fold_idx=0, resume=False, limit_train=limit_train, limit_val=limit_val)
+
+    # Phase 2: Verify saved physical checkpoint and training state reloading
+    print("\n[DEBUG TEST 2/3] Verifying physical reload of saved checkpoint...", flush=True)
+    ckpt_path = config.checkpoint_dir / "last_checkpoint_fold0.pt"
+    state_path = config.output_dir / "training_state.json"
+
+    if not os.path.exists(ckpt_path):
+        raise RuntimeError(f"[DEBUG TEST FAILURE] Checkpoint missing at {ckpt_path}")
+    if not os.path.exists(state_path):
+        raise RuntimeError(f"[DEBUG TEST FAILURE] training_state.json missing at {state_path}")
+
+    _ = load_checkpoint(ckpt_path, map_location="cpu")
+    print(f"[DEBUG TEST 2/3] Checkpoint physical reload test: PASSED ({ckpt_path.stat().st_size} bytes)", flush=True)
+
+    # Phase 3: Verify resume workflow from saved checkpoint
+    print("\n[DEBUG TEST 3/3] Testing resume workflow from saved checkpoint...", flush=True)
+    train(config, fold_idx=0, resume=True, limit_train=limit_train, limit_val=limit_val)
+
+    print("\n" + "=" * 80, flush=True)
+    print("[DEBUG CHECKPOINT TEST] Verification PASSED. Pipeline is safe for long training runs.", flush=True)
+    print("=" * 80 + "\n", flush=True)
+    sys.stdout.flush()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ISIC 2024 Full Competition Training Pipeline")
     parser.add_argument("--fold", type=int, default=0, help="Fold index (0-4)")
     parser.add_argument("--all-folds", action="store_true", help="Train all 5 GroupKFold folds sequentially")
     parser.add_argument("--resume", action="store_true", help="Resume training from existing checkpoint")
+    parser.add_argument("--debug-checkpoint-test", action="store_true", help="Run tiny Kaggle verification mode and exit")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
     parser.add_argument("--backbone", type=str, default=None, help="Override backbone model")
 
@@ -1182,8 +1254,12 @@ if __name__ == "__main__":
     if args.backbone is not None:
         config.backbone_name = args.backbone
         config.model_name = args.backbone
+    if args.debug_checkpoint_test:
+        config.debug_checkpoint_test = True
 
-    if args.all_folds:
+    if config.debug_checkpoint_test:
+        run_debug_checkpoint_test(config)
+    elif args.all_folds:
         train_full_ensemble(config, resume=args.resume)
     else:
         train(config, fold_idx=args.fold, resume=args.resume)

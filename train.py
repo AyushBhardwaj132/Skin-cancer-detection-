@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import Config
-from src.train import train, train_full_ensemble, resolve_resume_fold
+from src.train import train, train_full_ensemble, resolve_resume_fold, run_debug_checkpoint_test
 
 
 def main():
@@ -32,6 +32,11 @@ def main():
         "--resume",
         action="store_true",
         help="Resume training from an existing checkpoint",
+    )
+    parser.add_argument(
+        "--debug-checkpoint-test",
+        action="store_true",
+        help="Run tiny Kaggle verification mode (save, reload, resume test) and exit",
     )
     parser.add_argument(
         "--epochs",
@@ -72,6 +77,8 @@ def main():
         config.batch_size = args.batch_size
     if args.lr is not None:
         config.learning_rate = args.lr
+    if args.debug_checkpoint_test:
+        config.debug_checkpoint_test = True
 
     print("=" * 80)
     print("ISIC 2024 COMPETITION TRAINING PIPELINE")
@@ -84,9 +91,12 @@ def main():
     print(f"  AMP FP16:        {config.use_fp16}")
     print(f"  EMA Enabled:     {getattr(config, 'use_ema', True)}")
     print(f"  Resume Training: {args.resume}")
+    print(f"  Debug Mode:      {config.debug_checkpoint_test}")
     print("=" * 80 + "\n")
 
-    if args.all_folds:
+    if config.debug_checkpoint_test:
+        run_debug_checkpoint_test(config)
+    elif args.all_folds:
         print(f"Executing Full 5-Fold GroupKFold Training Pipeline...")
         train_full_ensemble(config, resume=args.resume)
     else:

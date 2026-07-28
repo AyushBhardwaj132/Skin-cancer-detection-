@@ -98,6 +98,7 @@ class Config:
     pseudo_neg_thresh: float = 0.01
     multi_gpu_mode: str = "auto"  # auto, single, dataparallel, ddp
     checkpoint_batch_interval: int = 500
+    debug_checkpoint_test: bool = False
     use_fp16: bool = True
     use_ema: bool = True
     ema_decay: float = 0.999

@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import Config
 from src.train import train
-from src.utils import ensure_dir, seed_everything
+from src.utils import ensure_dir, seed_everything, sync_file
 
 
 TRAIN_LIMIT = 1000
@@ -48,6 +48,7 @@ def main():
 
     if last_ckpt_path.exists():
         shutil.copy2(last_ckpt_path, smoke_ckpt_path)
+        sync_file(smoke_ckpt_path)
         print(f"\n[ARTIFACT] Copied last checkpoint to: {smoke_ckpt_path}")
 
     # Verify physical file existence

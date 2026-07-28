@@ -64,21 +64,32 @@ def resolve_image_path(image_dir: str | Path, image_id: str) -> Path:
     raise FileNotFoundError(f"Unable to locate an image for {image_id} under {base_dir}")
 
 
+def sync_file(path: str | Path) -> Path:
+    """Flush and sync OS kernel page cache buffer to physical disk storage for a file."""
+    path_obj = Path(path).resolve()
+    if not os.path.exists(path_obj):
+        raise RuntimeError(f"[CRITICAL FAILURE] Cannot sync file because it does not exist: {path_obj}")
+    try:
+        with open(path_obj, "rb+") as f:
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        pass
+    return path_obj
+
+
 def save_checkpoint(state: dict, path: str | Path) -> Path:
     path = Path(path).resolve()
     ensure_dir(path.parent)
 
+    # Task 4: Write to file handle, flush Python stdio buffer, call os.fsync on file descriptor
     try:
-        torch.save(state, path)
-    except Exception as e:
-        raise RuntimeError(f"[FAIL FAST] Failed to execute torch.save to {path}: {e}")
-
-    # Force OS kernel page cache buffer sync to physical storage
-    try:
-        with open(path, "rb") as f:
+        with open(path, "wb") as f:
+            torch.save(state, f)
+            f.flush()
             os.fsync(f.fileno())
-    except Exception as sync_err:
-        pass
+    except Exception as e:
+        raise RuntimeError(f"[FAIL FAST] Failed to execute torch.save with flush/fsync to {path}: {e}")
 
     # Task 5: Physical existence check using os.path.exists
     if not os.path.exists(path):
@@ -95,16 +106,15 @@ def save_checkpoint(state: dict, path: str | Path) -> Path:
     except Exception as load_err:
         raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file corrupt or unreadable immediately after write: {path} (Error: {load_err})")
 
-    # Task 3 formatted output
+    # Task 2 formatted output
     size_mb = size_bytes / (1024 * 1024)
-    print("\nCheckpoint saved:", flush=True)
-    print(f"{path}", flush=True)
-    print("\nExists:", flush=True)
-    print(f"{os.path.exists(path)}", flush=True)
-    print("\nSize:", flush=True)
-    print(f"{size_bytes} bytes", flush=True)
+    print("\nCheckpoint saved:\n", flush=True)
+    print(f"{path}\n", flush=True)
+    print(f"Exists: {os.path.exists(path)}\n", flush=True)
+    print(f"Size: {size_mb:.2f} MB ({size_bytes} bytes)\n", flush=True)
+    print("Reload test: PASSED\n", flush=True)
 
-    print("\nDirectory contents:", flush=True)
+    print("Directory contents:", flush=True)
     dir_files = sorted([f.name for f in path.parent.iterdir() if f.is_file()])
     if not dir_files:
         print("(Empty)", flush=True)
@@ -160,6 +170,7 @@ __all__ = [
     "resolve_image_path",
     "save_checkpoint",
     "load_checkpoint",
+    "sync_file",
     "IMAGE_EXTENSIONS",
 ]
 

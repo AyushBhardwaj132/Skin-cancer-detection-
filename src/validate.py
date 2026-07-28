@@ -138,10 +138,13 @@ def validate(
                     torch.flip(images, dims=[2, 3]),
                 ]
                 probs_list = []
+                logits_list = []
                 for img_aug in aug_images:
                     logits_aug = model(img_aug, metadata) if (use_metadata and metadata is not None) else model(img_aug)
+                    logits_list.append(logits_aug)
                     probs_list.append(torch.sigmoid(logits_aug))
 
+                logits = torch.stack(logits_list, dim=0).mean(dim=0)
                 batch_probs = torch.stack(probs_list, dim=0).mean(dim=0)
             else:
                 logits = model(images, metadata) if (use_metadata and metadata is not None) else model(images)

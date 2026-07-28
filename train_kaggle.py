@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import torch
 from src.config import Config
-from src.train import train, resolve_resume_fold
+from src.train import train, resolve_resume_fold, run_debug_checkpoint_test
 
 
 def setup_kaggle_hardware(config: Config) -> None:
@@ -75,6 +75,7 @@ def main() -> None:
     parser.add_argument("--fold", type=int, default=0, help="Fold index (0-4)")
     parser.add_argument("--all-folds", action="store_true", help="Train all 5 GroupKFold folds sequentially")
     parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
+    parser.add_argument("--debug-checkpoint-test", action="store_true", help="Run tiny Kaggle verification mode and exit")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
@@ -83,6 +84,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = get_config(args)
+    if args.debug_checkpoint_test:
+        config.debug_checkpoint_test = True
 
     print("Immediately before train():")
     print(f"  backbone_name = {config.backbone_name}")
@@ -108,7 +111,9 @@ def main() -> None:
     setup_kaggle_hardware(config)
     print("=" * 80 + "\n")
 
-    if args.all_folds:
+    if config.debug_checkpoint_test:
+        run_debug_checkpoint_test(config)
+    elif args.all_folds:
         print(f"Training backbone '{config.backbone_name}' across all {config.n_splits} folds...\n")
         for fold in range(config.n_splits):
             print(f"\n{'='*80}")

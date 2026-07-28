@@ -59,8 +59,7 @@ class TrainingState:
                 best_pauc=data.get("best_pauc", 0.0),
             )
         except Exception as e:
-            print(f"[WARN] Failed to read training_state.json ({e}). Returning default state.", flush=True)
-            return cls()
+            raise RuntimeError(f"[CRITICAL FAILURE] Existing training_state.json at {state_path} could not be read or parsed: {e}")
 
     def save(self, output_dir: str | Path) -> Path:
         output_path = Path(output_dir).resolve()
@@ -91,15 +90,15 @@ class TrainingState:
         except Exception as json_err:
             raise RuntimeError(f"[CRITICAL FAILURE] training_state.json is corrupt or unreadable immediately after write: {state_path} (Error: {json_err})")
 
-        # Task 3 formatted output
-        print("\nCheckpoint saved:", flush=True)
-        print(f"{state_path}", flush=True)
-        print("\nExists:", flush=True)
-        print(f"{os.path.exists(state_path)}", flush=True)
-        print("\nSize:", flush=True)
-        print(f"{size_bytes} bytes", flush=True)
+        # Task 2 formatted output
+        size_mb = size_bytes / (1024 * 1024)
+        print("\nCheckpoint saved:\n", flush=True)
+        print(f"{state_path}\n", flush=True)
+        print(f"Exists: {os.path.exists(state_path)}\n", flush=True)
+        print(f"Size: {size_mb:.4f} MB ({size_bytes} bytes)\n", flush=True)
+        print("Reload test: PASSED\n", flush=True)
 
-        print("\nDirectory contents:", flush=True)
+        print("Directory contents:", flush=True)
         dir_files = sorted([f.name for f in state_path.parent.iterdir() if f.is_file()])
         if not dir_files:
             print("(Empty)", flush=True)
