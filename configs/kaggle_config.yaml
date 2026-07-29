@@ -71,8 +71,10 @@ prefetch_factor: 2
 cudnn_benchmark: true
 multi_gpu: true
 
-# --- Reproducibility ---
+# --- Reproducibility & Cloud Backup ---
 seed: 42
+hf_enabled: true
+hf_repo_id: ayushbhar/isic-2024-checkpoints
 
 # --- Kaggle Paths (Environment Aware Defaults) ---
 kaggle_input_dir: /kaggle/input/isic-2024-challenge

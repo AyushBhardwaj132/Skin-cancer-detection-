@@ -9,7 +9,7 @@ from pathlib import Path
 class HuggingFaceBackup:
     """Asynchronously uploads model checkpoints to Hugging Face Hub in a background thread."""
 
-    def __init__(self, repo_id: str = "isic-2024-models", token: str | None = None):
+    def __init__(self, repo_id: str = "ayushbhar/isic-2024-checkpoints", token: str | None = None):
         self.repo_id = repo_id
         self.token = token or os.getenv("HF_TOKEN")
 

@@ -107,7 +107,7 @@ class Config:
     max_grad_norm: float = 1.0
 
     # Hugging Face Backup & Feature Caching
-    hf_repo_id: str = "isic-2024-models"
+    hf_repo_id: str = "ayushbhar/isic-2024-checkpoints"
     hf_enabled: bool = True
 
     # Visualization & Security
