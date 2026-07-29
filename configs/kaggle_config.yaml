@@ -41,7 +41,7 @@ poly_epsilon: 2.0
 
 # --- Regularization & Cross Validation ---
 n_splits: 5
-early_stopping_patience: 3
+early_stopping_patience: 2
 max_grad_norm: 1.0
 
 # --- Augmentation & Regularization ---

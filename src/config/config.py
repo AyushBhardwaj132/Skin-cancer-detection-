@@ -69,7 +69,7 @@ class Config:
 
     # Phase 2: StratifiedGroupKFold & Early Stopping
     n_splits: int = 5
-    early_stopping_patience: int = 3
+    early_stopping_patience: int = 2
     pauc_max_fpr: float = 0.1
 
     # Phase 3: Patient & Metadata Fusion

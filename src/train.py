@@ -151,7 +151,7 @@ from src.transforms import build_transforms, mixup_data, cutmix_data
 from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker, sync_file
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
-from src.training.state import TrainingState, save_resume_info, load_resume_info
+from src.training.state import TrainingState, save_resume_info, load_resume_info, get_git_commit
 from src.training.hf_backup import HuggingFaceBackup
 from src.training.archiver import create_fold_artifact_zip
 from src.evaluation.diagnostic import generate_fold_diagnostic_report
@@ -784,19 +784,32 @@ def train(
                 res_epoch = ckpt.get("epoch", 0)
                 res_batch = ckpt.get("batch_idx", 0)
                 res_fold = ckpt.get("fold", fold_idx)
+                res_global_step = ckpt.get("global_step", 0)
 
-                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                age_sec = time.time() - target_resume_path.stat().st_mtime
+                if age_sec < 60:
+                    age_str = f"{int(age_sec)}s"
+                elif age_sec < 3600:
+                    age_str = f"{int(age_sec // 60)}m {int(age_sec % 60)}s"
+                else:
+                    age_str = f"{int(age_sec // 3600)}h {int((age_sec % 3600) // 60)}m"
+
+                git_hash = get_git_commit()
+                hf_status = "YES" if (getattr(config, "hf_enabled", True) and os.getenv("HF_TOKEN")) else "NO"
+
                 print("\n" + "=" * 50, flush=True)
-                print("RESUME SUCCESSFUL", flush=True)
+                print("RESUME SUMMARY", flush=True)
                 print("=" * 50, flush=True)
-                print(f"Checkpoint Loaded : {target_resume_path.name}", flush=True)
-                print(f"Fold              : {res_fold}", flush=True)
-                print(f"Epoch             : {res_epoch}", flush=True)
-                print(f"Batch             : {res_batch}", flush=True)
-                print("Optimizer Restored: [OK]", flush=True)
-                print("Scheduler Restored: [OK]", flush=True)
-                print("EMA Restored      : [OK]", flush=True)
-                print(f"Resume Time       : {timestamp_str}", flush=True)
+                print(f"Git Commit          : {git_hash}", flush=True)
+                print(f"Backbone            : {config.backbone_name}", flush=True)
+                print(f"Latest Checkpoint   : {target_resume_path.name}", flush=True)
+                print(f"Fold                : {res_fold}", flush=True)
+                print(f"Epoch               : {res_epoch}/{config.num_epochs}", flush=True)
+                print(f"Batch               : {res_batch}", flush=True)
+                print(f"Global Step         : {res_global_step}", flush=True)
+                print(f"Checkpoint Age      : {age_str}", flush=True)
+                print(f"Checkpoint Verified : YES ({ckpt_size_mb:.1f} MB)", flush=True)
+                print(f"HF Backup           : {hf_status}", flush=True)
                 print("=" * 50 + "\n", flush=True)
                 sys.stdout.flush()
 
