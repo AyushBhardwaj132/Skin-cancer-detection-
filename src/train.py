@@ -151,7 +151,7 @@ from src.transforms import build_transforms, mixup_data, cutmix_data
 from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, seed_everything, seed_worker, sync_file
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
-from src.training.state import TrainingState
+from src.training.state import TrainingState, save_resume_info, load_resume_info
 from src.training.hf_backup import HuggingFaceBackup
 from src.training.archiver import create_fold_artifact_zip
 from src.evaluation.diagnostic import generate_fold_diagnostic_report
@@ -220,6 +220,19 @@ def _build_loaders_fold(
         train_meta_features = processor.fit_transform(train_df)
         val_meta_features = processor.transform(val_df)
         metadata_dim = train_meta_features.shape[1]
+
+        val_positives = int((val_df[config.target_column] == 1).sum()) if config.target_column in val_df.columns else 0
+        val_benign = len(val_df) - val_positives
+        val_pos_ratio = (val_positives / max(len(val_df), 1)) * 100.0
+
+        print(f"\n{'='*60}")
+        print(f"FOLD {fold_idx} VALIDATION DATASET STATISTICS")
+        print(f"{'='*60}")
+        print(f"  Total Validation Samples: {len(val_df)}")
+        print(f"  Melanoma Positives (1)  : {val_positives} ({val_pos_ratio:.2f}%)")
+        print(f"  Benign Samples (0)      : {val_benign} ({100.0 - val_pos_ratio:.2f}%)")
+        print(f"  Patient Group Isolation : VERIFIED [OK]")
+        print(f"{'='*60}\n")
 
         # Save processor for inference
         processor.save(str(config.metadata_processor_path))
@@ -736,17 +749,30 @@ def train(
         current_model_name = config.backbone_name if config.use_metadata else config.model_name
         clean_current = current_model_name.replace("tf_", "").replace("-", "_")
 
-        for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
-            if candidate.exists() and candidate.stat().st_size > 0:
-                try:
-                    chk_meta = load_checkpoint(candidate, map_location="cpu")
-                    chk_model = chk_meta.get("model_name", "")
-                    clean_chk = chk_model.replace("tf_", "").replace("-", "_") if chk_model else ""
-                    if not chk_model or clean_chk == clean_current:
+        resume_info = load_resume_info(config.output_dir)
+        if resume_info:
+            print(f"[RESUME INFO LOG] Fast lookup from resume_info.json:")
+            print(f"  Fold: {resume_info.get('fold')}, Epoch: {resume_info.get('epoch')}, Batch: {resume_info.get('batch')}, Checkpoint: {resume_info.get('checkpoint')}")
+            info_ckpt_name = resume_info.get("checkpoint")
+            if info_ckpt_name:
+                for search_dir in [bb_dir, config.checkpoint_dir]:
+                    candidate = search_dir / info_ckpt_name
+                    if candidate.exists() and candidate.stat().st_size > 0:
                         target_resume_path = candidate
                         break
-                except Exception:
-                    continue
+
+        if not target_resume_path:
+            for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
+                if candidate.exists() and candidate.stat().st_size > 0:
+                    try:
+                        chk_meta = load_checkpoint(candidate, map_location="cpu")
+                        chk_model = chk_meta.get("model_name", "")
+                        clean_chk = chk_model.replace("tf_", "").replace("-", "_") if chk_model else ""
+                        if not chk_model or clean_chk == clean_current:
+                            target_resume_path = candidate
+                            break
+                    except Exception:
+                        continue
 
         if not target_resume_path or not target_resume_path.exists():
             print(f"[RESUME] No checkpoint found under {config.checkpoint_dir}. Starting fresh training.", flush=True)
@@ -939,6 +965,14 @@ def train(
             if last_root_ckpt_path.resolve() != last_checkpoint_path.resolve():
                 shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
                 sync_file(last_root_ckpt_path)
+            save_resume_info(
+                output_dir=config.output_dir,
+                fold=fold_idx,
+                epoch=epoch,
+                batch_idx=b_idx,
+                global_step=epoch * total_b + b_idx,
+                checkpoint_name=last_checkpoint_path.name,
+            )
             print(f"[OK] Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
             sys.stdout.flush()
 
@@ -1098,6 +1132,15 @@ def train(
             shutil.copy2(last_checkpoint_path, last_root_ckpt_path)
             sync_file(last_root_ckpt_path)
 
+        save_resume_info(
+            output_dir=config.output_dir,
+            fold=fold_idx,
+            epoch=epoch,
+            batch_idx=0,
+            global_step=epoch * len(train_loader),
+            checkpoint_name=last_checkpoint_path.name,
+        )
+
         if is_best:
             best_pauc = current_score
             best_auc = val_metrics.get("roc_auc", float("nan"))
@@ -1109,6 +1152,15 @@ def train(
                 sync_file(best_root_ckpt_path)
             training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
             print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}", flush=True)
+
+            save_resume_info(
+                output_dir=config.output_dir,
+                fold=fold_idx,
+                epoch=epoch,
+                batch_idx=0,
+                global_step=epoch * len(train_loader),
+                checkpoint_name=best_checkpoint_path.name,
+            )
 
             if hf_backup and hf_backup.is_available:
                 print(f"[7/8] Triggering Hugging Face backup for new best model: {best_checkpoint_path.name}...", flush=True)

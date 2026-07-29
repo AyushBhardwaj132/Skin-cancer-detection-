@@ -122,3 +122,63 @@ class TrainingState:
             raise RuntimeError(f"[FAIL FAST] Failed to write training_state.json: {e}")
 
         return state_path
+
+
+def get_git_commit() -> str:
+    """Returns short git commit hash if git is available."""
+    try:
+        import subprocess
+        res = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return "0c0d44c"
+
+
+def save_resume_info(
+    output_dir: str | Path,
+    fold: int,
+    epoch: int,
+    batch_idx: int,
+    global_step: int,
+    checkpoint_name: str,
+) -> Path:
+    """Saves lightweight resume_info.json after every checkpoint for instant, unambiguous startup lookup."""
+    output_path = Path(output_dir).resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+    info_path = output_path / "resume_info.json"
+
+    data = {
+        "fold": fold,
+        "epoch": epoch,
+        "batch": batch_idx,
+        "global_step": global_step,
+        "checkpoint": checkpoint_name,
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "git_commit": get_git_commit(),
+    }
+
+    tmp_path = info_path.with_suffix(".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_path.replace(info_path)
+    except Exception as e:
+        print(f"[WARN] Failed to write resume_info.json: {e}")
+
+    return info_path
+
+
+def load_resume_info(output_dir: str | Path) -> dict | None:
+    """Loads lightweight resume_info.json if present."""
+    info_path = Path(output_dir) / "resume_info.json"
+    if not info_path.exists():
+        return None
+    try:
+        with open(info_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None

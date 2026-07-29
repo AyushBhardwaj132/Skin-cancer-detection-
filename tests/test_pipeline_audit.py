@@ -121,6 +121,35 @@ def test_fold_archiver():
         print("  [PASS] Artifact archiver created fold_0_artifacts.zip successfully!")
 
 
+def test_resume_info_tracker():
+    print("\n" + "=" * 80)
+    print("TEST 4: resume_info.json Fast Lookup & State Serialization")
+    print("=" * 80)
+
+    from src.training.state import save_resume_info, load_resume_info
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        output_dir = Path(tmp_dir)
+        info_file = save_resume_info(
+            output_dir=output_dir,
+            fold=2,
+            epoch=4,
+            batch_idx=6500,
+            global_step=36500,
+            checkpoint_name="last_checkpoint_fold2.pt",
+        )
+        assert info_file.exists(), "resume_info.json not created!"
+
+        info = load_resume_info(output_dir)
+        assert info is not None, "Failed to load resume_info.json!"
+        assert info["fold"] == 2, f"Expected fold=2, got {info['fold']}"
+        assert info["epoch"] == 4, f"Expected epoch=4, got {info['epoch']}"
+        assert info["batch"] == 6500, f"Expected batch=6500, got {info['batch']}"
+        assert info["checkpoint"] == "last_checkpoint_fold2.pt", f"Unexpected checkpoint: {info['checkpoint']}"
+        print(f"  Saved & Loaded resume_info.json successfully: {info}")
+        print("  [PASS] resume_info.json fast lookup verified!")
+
+
 def main():
     print("=" * 80)
     print("ISIC 2024 — PIPELINE AUDIT & REGRESSION TEST SUITE")
@@ -129,6 +158,7 @@ def main():
     test_stratified_group_kfold_isolation_and_balance()
     test_loss_numerical_stability()
     test_fold_archiver()
+    test_resume_info_tracker()
 
     print("\n" + "=" * 80)
     print("[PASS] ALL PIPELINE AUDIT & REGRESSION TESTS PASSED CLEANLY")
