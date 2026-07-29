@@ -728,52 +728,50 @@ def train(
                 except Exception:
                     continue
 
-        state_file = config.output_dir / "training_state.json"
         if not target_resume_path or not target_resume_path.exists():
-            raise RuntimeError(
-                f"[CRITICAL FAILURE] --resume requested, but no valid checkpoint file was found under {config.checkpoint_dir}!"
-            )
+            print(f"[RESUME] No checkpoint found under {config.checkpoint_dir}. Starting fresh training.", flush=True)
+            resume = False
+        else:
+            ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
+            try:
+                ckpt = load_checkpoint(target_resume_path, map_location=get_device())
+                res_epoch = ckpt.get("epoch", 0)
+                res_batch = ckpt.get("batch_idx", 0)
+                res_fold = ckpt.get("fold", fold_idx)
 
-        ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
-        try:
-            ckpt = load_checkpoint(target_resume_path, map_location=get_device())
-        except Exception as load_err:
-            raise RuntimeError(f"[CRITICAL FAILURE] Failed to reload resume checkpoint at {target_resume_path}: {load_err}")
+                timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print("\n" + "=" * 50, flush=True)
+                print("RESUME SUCCESSFUL", flush=True)
+                print("=" * 50, flush=True)
+                print(f"Checkpoint Loaded : {target_resume_path.name}", flush=True)
+                print(f"Fold              : {res_fold}", flush=True)
+                print(f"Epoch             : {res_epoch}", flush=True)
+                print(f"Batch             : {res_batch}", flush=True)
+                print("Optimizer Restored: [OK]", flush=True)
+                print("Scheduler Restored: [OK]", flush=True)
+                print("EMA Restored      : [OK]", flush=True)
+                print(f"Resume Time       : {timestamp_str}", flush=True)
+                print("=" * 50 + "\n", flush=True)
+                sys.stdout.flush()
 
-        res_epoch = ckpt.get("epoch", 0)
-        res_batch = ckpt.get("batch_idx", 0)
-        res_fold = ckpt.get("fold", fold_idx)
-
-        timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print("\n" + "=" * 50, flush=True)
-        print("RESUME SUCCESSFUL", flush=True)
-        print("=" * 50, flush=True)
-        print(f"Checkpoint Loaded : {target_resume_path.name}", flush=True)
-        print(f"Fold              : {res_fold}", flush=True)
-        print(f"Epoch             : {res_epoch}", flush=True)
-        print(f"Batch             : {res_batch}", flush=True)
-        print("Optimizer Restored: [OK]", flush=True)
-        print("Scheduler Restored: [OK]", flush=True)
-        print("EMA Restored      : [OK]", flush=True)
-        print(f"Resume Time       : {timestamp_str}", flush=True)
-        print("=" * 50 + "\n", flush=True)
-        sys.stdout.flush()
-
-        if fold_idx in training_state.completed_folds:
-            print(f"[RESUME] Skipping Fold {fold_idx} (already completed in training_state.json)", flush=True)
-            sys.stdout.flush()
-            target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else None)
-            return {
-                "history": [],
-                "best_checkpoint": str(target_eval_ckpt) if target_eval_ckpt else "",
-                "best_val_pauc": training_state.best_pauc,
-                "best_val_auc": 0.0,
-                "accuracy": 0.0,
-                "precision": 0.0,
-                "recall": 0.0,
-                "f1": 0.0,
-                "metadata_dim": 0,
-            }
+                if fold_idx in training_state.completed_folds:
+                    print(f"[RESUME] Skipping Fold {fold_idx} (already completed in training_state.json)", flush=True)
+                    sys.stdout.flush()
+                    target_eval_ckpt = best_checkpoint_path if best_checkpoint_path.exists() else (best_root_ckpt_path if best_root_ckpt_path.exists() else None)
+                    return {
+                        "history": [],
+                        "best_checkpoint": str(target_eval_ckpt) if target_eval_ckpt else "",
+                        "best_val_pauc": training_state.best_pauc,
+                        "best_val_auc": 0.0,
+                        "accuracy": 0.0,
+                        "precision": 0.0,
+                        "recall": 0.0,
+                        "f1": 0.0,
+                        "metadata_dim": 0,
+                    }
+            except Exception as load_err:
+                print(f"[RESUME WARN] Failed to reload resume checkpoint at {target_resume_path} ({load_err}). Starting fresh training.", flush=True)
+                resume = False
 
     device = get_device()
     gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
