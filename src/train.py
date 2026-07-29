@@ -153,6 +153,8 @@ from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
 from src.training.hf_backup import HuggingFaceBackup
+from src.training.archiver import create_fold_artifact_zip
+from src.evaluation.diagnostic import generate_fold_diagnostic_report
 from src.training.hardware import setup_accelerated_model, ThroughputLogger, get_hardware_info
 from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
@@ -394,6 +396,19 @@ def _train_one_epoch(
                 loss = criterion(logits, labels)
 
         fwd_time = time.perf_counter() - t_fwd_start
+
+        # HARD ASSERTIONS: Instantly halt training if loss, logits, or labels contain NaN / Inf
+        if torch.isnan(loss) or torch.isinf(loss):
+            raise ValueError(
+                f"[FATAL TRAINING ERROR] NaN or Inf loss detected at Fold {fold}, Epoch {epoch}, Batch {batch_idx}/{total_batches}! "
+                f"Halting training immediately to prevent model weight corruption."
+            )
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            raise ValueError(
+                f"[FATAL TRAINING ERROR] NaN or Inf logits produced by model at Fold {fold}, Epoch {epoch}, Batch {batch_idx}/{total_batches}!"
+            )
+        if torch.isnan(labels).any():
+            raise ValueError(f"[FATAL TRAINING ERROR] NaN target labels encountered in batch {batch_idx}!")
 
         # 5. Backward Pass & Scaler Step
         if debug:
@@ -1172,6 +1187,37 @@ def train(
     print(f"  Validation Recall   : {val_rec:.4f}")
     print(f"  Validation F1 Score : {val_f1:.4f}")
     print(f"{'='*80}\n")
+
+    # Generate Fold Diagnostic JSON Report (Leakage Audit, Target Ratio, Confusion Matrix)
+    val_metrics_dict = {
+        "pauc": val_pauc,
+        "roc_auc": val_auc,
+        "optimal_threshold": 0.5,
+        "f1_optimal": val_f1,
+        "loss": history[-1].get("val_loss", 0.0) if history else 0.0,
+        "y_true": y_val_true,
+        "y_score": y_val_pred,
+    }
+    _ = generate_fold_diagnostic_report(
+        train_df=train_loader.dataset.df if hasattr(train_loader.dataset, "df") else pd.DataFrame(),
+        val_df=val_loader.dataset.df if hasattr(val_loader.dataset, "df") else pd.DataFrame(),
+        val_metrics=val_metrics_dict,
+        fold_idx=fold_idx,
+        output_dir=config.output_dir,
+    )
+
+    # Requirement 8: Create End-of-Fold Artifact ZIP Archive
+    zip_path = create_fold_artifact_zip(config.output_dir, fold_idx)
+
+    # Requirement 3 & 8: Asynchronously upload complete fold artifacts to Hugging Face
+    if hf_backup and hf_backup.is_available:
+        print(f"  [HF BACKUP] Triggering non-blocking upload of Fold {fold_idx} artifacts & zip archive...")
+        hf_backup.upload_fold_artifacts_async(
+            output_dir=config.output_dir,
+            fold_idx=fold_idx,
+            model_name=config.backbone_name,
+            zip_path=zip_path,
+        )
 
     total_time_str = time.strftime("%H:%M:%S", time.gmtime(time.time() - pipeline_start_time))
 

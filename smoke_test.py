@@ -16,20 +16,24 @@ from src.train import train
 from src.utils import ensure_dir, seed_everything, sync_file
 
 
-TRAIN_LIMIT = 1000
-VAL_LIMIT = 500
+TRAIN_LIMIT = 8
+VAL_LIMIT = 4
 
 
 def main():
     # --- Config ---
     config = Config.from_yaml("configs/kaggle_config.yaml")
+    config.output_dir = Path("outputs_smoke_test")
     config.num_epochs = 1
+    config.backbone_name = "resnet18"
+    config.model_name = "resnet18"
+    config.batch_size = 4
     config.num_workers = 0  # safe for quick CPU run
     config.use_advanced_augs = False
     config.use_mixup = False
     config.use_cutmix = False
     config.use_fp16 = False
-    config.checkpoint_batch_interval = 10  # Force intra-epoch checkpoint every 10 batches
+    config.checkpoint_batch_interval = 1  # Force intra-epoch checkpoint every 1 batch
     seed_everything(config.seed)
 
     print("=" * 80)

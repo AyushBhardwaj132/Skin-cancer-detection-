@@ -19,7 +19,7 @@ metadata_mlp_hidden: 256
 metadata_mlp_output: 128
 
 # --- Training Hyperparameters ---
-num_epochs: 10
+num_epochs: 6
 batch_size: 32
 learning_rate: 0.0001
 weight_decay: 0.0001
@@ -41,7 +41,7 @@ poly_epsilon: 2.0
 
 # --- Regularization & Cross Validation ---
 n_splits: 5
-early_stopping_patience: 5
+early_stopping_patience: 3
 max_grad_norm: 1.0
 
 # --- Augmentation & Regularization ---

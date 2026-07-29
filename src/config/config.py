@@ -58,7 +58,7 @@ class Config:
     backbone_name: str = "tf_efficientnetv2_m"
     image_size: int = 384
     batch_size: int = 32
-    num_epochs: int = 10
+    num_epochs: int = 6
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
     num_workers: int = 4
@@ -67,9 +67,9 @@ class Config:
     target_column: str = "target"
     image_id_column: str = "isic_id"
 
-    # Phase 2: GroupKFold & Early Stopping
+    # Phase 2: StratifiedGroupKFold & Early Stopping
     n_splits: int = 5
-    early_stopping_patience: int = 5
+    early_stopping_patience: int = 3
     pauc_max_fpr: float = 0.1
 
     # Phase 3: Patient & Metadata Fusion
