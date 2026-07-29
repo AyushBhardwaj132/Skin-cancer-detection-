@@ -83,16 +83,22 @@ def save_checkpoint(state: dict, path: str | Path) -> Path:
     path = Path(path).resolve()
     ensure_dir(path.parent)
 
-    # Task 4: Write to file handle, flush Python stdio buffer, call os.fsync on file descriptor
+    tmp_path = path.with_suffix(".tmp")
     try:
-        with open(path, "wb") as f:
+        with open(tmp_path, "wb") as f:
             torch.save(state, f)
             f.flush()
             os.fsync(f.fileno())
+        tmp_path.replace(path)
     except Exception as e:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
         raise RuntimeError(f"[FAIL FAST] Failed to execute torch.save with flush/fsync to {path}: {e}")
 
-    # Task 5: Physical existence check using os.path.exists
+    # Physical existence check using os.path.exists
     if not os.path.exists(path):
         raise RuntimeError(f"[CRITICAL FAILURE] Checkpoint file DOES NOT EXIST on disk after save: {path}")
 

@@ -6,6 +6,7 @@ import pandas as pd
 from src.config import Config
 from src.inference import predict, export_onnx
 from src.train import train, train_full_ensemble, compare_backbones
+from src.training.runner import run_full_competition_pipeline
 
 
 def main() -> None:
@@ -17,7 +18,7 @@ def main() -> None:
         choices=["info", "train", "train-ensemble", "infer", "compare-backbones", "visualize", "blend", "pseudo-label", "evaluate", "export-onnx", "distill", "api", "app"],
         help="Pipeline step to run",
     )
-    parser.add_argument("--fold", type=int, default=0, help="Fold index for GroupKFold (0-4)")
+    parser.add_argument("--fold", type=int, default=None, help="Fold index for GroupKFold (0-4). Omit for all folds.")
     parser.add_argument("--epochs", type=int, default=None, help="Override num_epochs")
     parser.add_argument("--backbone", type=str, default=None, help="Override backbone_name")
     parser.add_argument("--loss", type=str, default=None, help="Override loss_type (bce/focal/asymmetric)")
@@ -43,7 +44,7 @@ def main() -> None:
         config.use_tta = True
 
     if args.mode == "train":
-        train(config, fold_idx=args.fold)
+        run_full_competition_pipeline(config, requested_fold=args.fold)
 
     elif args.mode == "train-ensemble":
         train_full_ensemble(config)

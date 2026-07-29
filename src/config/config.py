@@ -106,10 +106,18 @@ class Config:
     gradient_accumulation_steps: int = 1
     max_grad_norm: float = 1.0
 
+    # Hugging Face Backup & Feature Caching
+    hf_repo_id: str = "isic-2024-models"
+    hf_enabled: bool = True
+
     # Visualization & Security
     viz_max_samples: int = 5000
     max_upload_size_mb: int = 15
     allowed_mime_types: tuple[str, ...] = ("image/jpeg", "image/png", "image/webp")
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.output_dir / "cache"
 
     @property
     def train_metadata_path(self) -> Path:
@@ -165,15 +173,17 @@ class Config:
 
     @property
     def metadata_processor_path(self) -> Path:
-        return self.output_dir / "metadata_processor.joblib"
+        return self.cache_dir / "metadata_processor.joblib"
 
     @property
     def ensemble_prediction_path(self) -> Path:
         return self.prediction_dir / "ensemble.csv"
 
-    def get_backbone_checkpoint_dir(self, backbone_name: str) -> Path:
+    def get_backbone_checkpoint_dir(self, backbone_name: str, fold_idx: int | None = None) -> Path:
         clean_name = backbone_name.replace("tf_", "").replace("-", "_")
         path = self.checkpoint_dir / clean_name
+        if fold_idx is not None:
+            path = path / f"fold_{fold_idx}"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

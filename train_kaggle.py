@@ -2,7 +2,7 @@
 ISIC 2024 — Kaggle GPU Training Entry Point
 
 Executes 5-fold GroupKFold competition training on Kaggle GPU / Local CUDA environment.
-Reuses existing production modules: Config, FusionModel, ISICDataset, train_full_ensemble, train.
+Reuses existing production modules: Config, FusionModel, ISICDataset, run_full_competition_pipeline.
 """
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import torch
 from src.config import Config
-from src.train import train, resolve_resume_fold, run_debug_checkpoint_test
+from src.training.runner import run_full_competition_pipeline
+from src.train import run_debug_checkpoint_test
 
 
 def setup_kaggle_hardware(config: Config) -> None:
@@ -28,7 +29,6 @@ def setup_kaggle_hardware(config: Config) -> None:
         print(f"  [CUDA DETECTED] GPU Hardware Acceleration Active: {device_name}")
         print(f"  [CUDA] Memory Allocated: {torch.cuda.memory_allocated(0) / 1024**2:.1f} MB")
         
-        # Enable GPU optimizations
         config.use_fp16 = True
         torch.backends.cudnn.benchmark = True
         print("  [GPU OPTIMIZATIONS] AMP FP16 Enabled | CuDNN Benchmark Enabled")
@@ -43,11 +43,6 @@ def get_config(args: argparse.Namespace) -> Config:
     config_path = args.config if args.config else "configs/kaggle_config.yaml"
     config = Config.from_yaml(config_path)
 
-    print("After YAML load:")
-    print(f"  backbone_name = {config.backbone_name}")
-    print(f"  image_size    = {config.image_size}")
-    print(f"  focal_alpha   = {config.focal_alpha}\n")
-
     # Apply CLI parameter overrides
     if args.epochs is not None:
         config.num_epochs = args.epochs
@@ -59,11 +54,6 @@ def get_config(args: argparse.Namespace) -> Config:
         config.backbone_name = args.backbone
         config.model_name = args.backbone
 
-    print("After CLI overrides:")
-    print(f"  backbone_name = {config.backbone_name}")
-    print(f"  image_size    = {config.image_size}")
-    print(f"  focal_alpha   = {config.focal_alpha}\n")
-
     return config
 
 
@@ -72,9 +62,10 @@ def main() -> None:
         description="ISIC 2024 Challenge — Kaggle GPU Competition Training Entry Point"
     )
     parser.add_argument("--config", type=str, default="configs/kaggle_config.yaml", help="Path to config YAML")
-    parser.add_argument("--fold", type=int, default=0, help="Fold index (0-4)")
-    parser.add_argument("--all-folds", action="store_true", help="Train all 5 GroupKFold folds sequentially")
-    parser.add_argument("--resume", action="store_true", help="Resume from existing checkpoint")
+    parser.add_argument("--fold", type=int, default=None, help="Specific fold index (0-4). Omit to train all 5 folds automatically.")
+    parser.add_argument("--all-folds", action="store_true", help="Explicitly request training all 5 folds (default behavior)")
+    parser.add_argument("--resume", action="store_true", default=True, help="Auto-resume from existing checkpoint (default: True)")
+    parser.add_argument("--no-resume", action="store_true", help="Disable auto-resuming and start from scratch")
     parser.add_argument("--debug-checkpoint-test", action="store_true", help="Run tiny Kaggle verification mode and exit")
     parser.add_argument("--debug", action="store_true", help="Enable verbose step-by-step debug logging")
     parser.add_argument("--epochs", type=int, default=None, help="Override epoch count")
@@ -90,48 +81,32 @@ def main() -> None:
     if args.debug:
         config.debug = True
 
-    print("Immediately before train():")
-    print(f"  backbone_name = {config.backbone_name}")
-    print(f"  image_size    = {config.image_size}")
-    print(f"  focal_alpha   = {config.focal_alpha}\n")
-
     print("=" * 80)
-
     print("ISIC 2024 — KAGGLE GPU COMPETITION TRAINING PIPELINE")
     print("=" * 80)
     print(f"  Project:                {config.project_name}")
     print(f"  Resolved Data Dir:      {config.data_dir} [{'EXISTS' if config.data_dir.exists() else 'MISSING'}]")
     print(f"  Resolved Metadata Path: {config.train_metadata_path} [{'EXISTS' if config.train_metadata_path.exists() else 'MISSING'}]")
-    print(f"  Resolved HDF5 Path:     {config.train_image_hdf5_path} [{'EXISTS' if config.train_image_hdf5_path.exists() else 'MISSING'}]")
     print(f"  Resolved Output Dir:    {config.output_dir}")
     print(f"  Backbone:               {config.backbone_name}")
     print(f"  Image Size:             {config.image_size}x{config.image_size}")
     print(f"  Batch Size:             {config.batch_size}")
     print(f"  Epochs:                 {config.num_epochs}")
     print(f"  Learning Rate:          {config.learning_rate}")
-    print(f"  Loss Function:          {config.loss_type} (alpha={config.focal_alpha}, gamma={config.focal_gamma})")
     
     setup_kaggle_hardware(config)
     print("=" * 80 + "\n")
 
     if config.debug_checkpoint_test:
         run_debug_checkpoint_test(config)
-    elif args.all_folds:
-        print(f"Training backbone '{config.backbone_name}' across all {config.n_splits} folds...\n")
-        for fold in range(config.n_splits):
-            print(f"\n{'='*80}")
-            print(f"  Fold {fold}/{config.n_splits - 1} | Backbone: {config.backbone_name}")
-            print(f"{'='*80}")
-            train(config, fold_idx=fold, resume=args.resume)
     else:
-        target_fold = args.fold
-        if args.resume:
-            target_fold, _ = resolve_resume_fold(config, requested_fold=args.fold, resume=True)
-            if target_fold >= config.n_splits:
-                print(f"[RESUME] All {config.n_splits} folds are already completed. Exiting cleanly.", flush=True)
-                sys.exit(0)
-        print(f"Executing Single-Fold Training Pipeline for Fold {target_fold}...")
-        train(config, fold_idx=target_fold, resume=args.resume)
+        requested_fold = args.fold if not args.all_folds else None
+        resume_flag = not args.no_resume
+        run_full_competition_pipeline(
+            config=config,
+            requested_fold=requested_fold,
+            resume=resume_flag,
+        )
 
 
 if __name__ == "__main__":

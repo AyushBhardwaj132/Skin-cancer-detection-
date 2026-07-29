@@ -142,6 +142,7 @@ from src.dataset import ISICDataset
 from src.fusion_model import FusionModel
 from src.losses import build_loss
 from src.metadata import MetadataProcessor
+from src.data.caching import MetadataCacheManager
 from src.metrics import compute_pauc
 from src.model import build_model
 from src.patient_features import enrich_metadata
@@ -188,17 +189,28 @@ def _build_loaders_fold(
     if limit_val is not None and limit_val > 0:
         val_df = val_df.iloc[:limit_val].reset_index(drop=True)
 
-    # --- Phase 3: Metadata processing ---
+    # --- Phase 3: Metadata processing (Cached for fast startup) ---
     metadata_dim = 1  # fallback when metadata is disabled
     train_meta_features = None
     val_meta_features = None
 
     if config.use_metadata:
-        # Enrich with patient-level features and ugly duckling score
-        if config.use_patient_features:
-            print("  Computing patient features & ugly duckling scores...")
-            train_df = enrich_metadata(train_df)
-            val_df = enrich_metadata(val_df)
+        full_df = MetadataCacheManager.load_or_compute_enriched_metadata(
+            config.train_metadata_path, config, verbose=True
+        )
+        # Slice fold dataframes from enriched dataframe
+        train_df, val_df = get_fold_dataframes(
+            config.train_metadata_path,
+            fold_idx=fold_idx,
+            n_splits=config.n_splits,
+        )
+        train_df = full_df.iloc[train_df.index].reset_index(drop=True)
+        val_df = full_df.iloc[val_df.index].reset_index(drop=True)
+
+        if limit_train is not None and limit_train > 0:
+            train_df = train_df.iloc[:limit_train].reset_index(drop=True)
+        if limit_val is not None and limit_val > 0:
+            val_df = val_df.iloc[:limit_val].reset_index(drop=True)
 
         # Fit metadata processor on train, transform both
         processor = MetadataProcessor()
@@ -298,6 +310,7 @@ def _train_one_epoch(
     save_intra_epoch_checkpoint: callable | None = None,
     output_dir: Path | None = None,
     debug: bool = False,
+    start_batch_idx: int = 0,
 ):
     """Train for one epoch with clean dashboard, AMP, EMA, and optional debug tracing."""
     model.train()
@@ -315,7 +328,7 @@ def _train_one_epoch(
 
     total_batches = len(dataloader)
     if debug:
-        print(f"  [TRAIN LOOP] Starting training loop across {total_batches} batches...", flush=True)
+        print(f"  [TRAIN LOOP] Starting training loop across {total_batches} batches (start_batch={start_batch_idx})...", flush=True)
 
     data_iter = iter(dataloader)
     batch_idx = 0
@@ -324,6 +337,9 @@ def _train_one_epoch(
 
     while True:
         batch_idx += 1
+        if start_batch_idx > 0 and batch_idx <= start_batch_idx:
+            next(data_iter, None)
+            continue
 
         # 1. DataLoader fetch
         if debug:
@@ -681,7 +697,10 @@ def train(
 
     verify_checkpoint_dir_writable(config.checkpoint_dir)
 
-    bb_dir = config.get_backbone_checkpoint_dir(config.backbone_name if config.use_metadata else config.model_name)
+    bb_dir = config.get_backbone_checkpoint_dir(
+        config.backbone_name if config.use_metadata else config.model_name,
+        fold_idx=fold_idx,
+    )
     best_checkpoint_path = bb_dir / f"best_model_fold{fold_idx}.pt"
     best_root_ckpt_path = config.checkpoint_dir / f"best_model_fold{fold_idx}.pt"
 
@@ -832,10 +851,35 @@ def train(
             if "ema_state_dict" in ckpt and ema is not None and ckpt.get("ema_state_dict") is not None:
                 ema.module.load_state_dict(ckpt["ema_state_dict"])
             
-            start_epoch = ckpt.get("epoch", 0) + 1
+            start_batch_idx = 0
+            saved_epoch = ckpt.get("epoch", 0)
+            saved_batch = ckpt.get("batch_idx", 0)
+            total_b = ckpt.get("total_batches", 0)
+
+            if saved_batch > 0 and (total_b == 0 or saved_batch < total_b):
+                start_epoch = saved_epoch
+                start_batch_idx = saved_batch
+            else:
+                start_epoch = saved_epoch + 1
+                start_batch_idx = 0
+
             best_pauc = ckpt.get("best_val_pauc", ckpt.get("val_pauc", float("-inf")))
             best_auc = ckpt.get("best_val_auc", ckpt.get("val_auc", float("-inf")))
-            print(f"  Resumed at epoch {start_epoch} (Previous Best pAUC={best_pauc:.4f})")
+
+            # Restore RNG state if present
+            if "rng_state" in ckpt and ckpt["rng_state"]:
+                rng = ckpt["rng_state"]
+                if "torch" in rng and rng["torch"] is not None:
+                    torch.set_rng_state(rng["torch"])
+                if "cuda" in rng and rng["cuda"] is not None and torch.cuda.is_available():
+                    try:
+                        torch.cuda.set_rng_state_all(rng["cuda"])
+                    except Exception:
+                        pass
+                if "numpy" in rng and rng["numpy"] is not None:
+                    np.random.set_state(rng["numpy"])
+
+            print(f"  Resumed at epoch {start_epoch}, batch {start_batch_idx} (Previous Best pAUC={best_pauc:.4f})")
 
     print(f"\nTraining fold {fold_idx} for epochs {start_epoch} to {config.num_epochs}...")
     print(f"  AMP FP16={config.use_fp16}, EMA={getattr(config, 'use_ema', True)}, MixUp={config.use_mixup}, CutMix={config.use_cutmix}")
@@ -859,6 +903,11 @@ def train(
                 "scheduler_state_dict": scheduler.state_dict(),
                 "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
                 "ema_state_dict": ema.module.state_dict() if ema is not None else None,
+                "rng_state": {
+                    "torch": torch.get_rng_state(),
+                    "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+                    "numpy": np.random.get_state(),
+                },
                 "best_val_pauc": best_pauc if best_pauc != float("-inf") else 0.0,
                 "best_val_auc": best_auc if best_auc != float("-inf") else 0.0,
                 "val_pauc": float("nan"),
@@ -874,6 +923,8 @@ def train(
                 sync_file(last_root_ckpt_path)
             print(f"[OK] Intra-epoch checkpoint saved at batch {b_idx}/{total_b}", flush=True)
             sys.stdout.flush()
+
+        curr_start_b = start_batch_idx if (resume and epoch == start_epoch) else 0
 
         train_loss = _train_one_epoch(
             model, train_loader, criterion, optimizer, scaler, device,
@@ -894,6 +945,7 @@ def train(
             save_intra_epoch_checkpoint=save_intra_epoch_checkpoint,
             output_dir=config.output_dir,
             debug=getattr(config, "debug", False),
+            start_batch_idx=curr_start_b,
         )
 
         # Save LAST checkpoint & update training_state.json IMMEDIATELY after training (BEFORE validation)

@@ -9,8 +9,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.config import Config
-from src.train import train, train_full_ensemble, resolve_resume_fold, run_debug_checkpoint_test
+from src.config.config import Config
+from src.training.runner import run_full_competition_pipeline
+from src.train import run_debug_checkpoint_test
 
 
 def main():
@@ -20,23 +21,18 @@ def main():
     parser.add_argument(
         "--fold",
         type=int,
-        default=0,
-        help="Fold index for GroupKFold patient-level cross-validation (0 to 4)",
+        default=None,
+        help="Specific fold index (0 to 4). Omit to automatically train all 5 folds.",
     )
     parser.add_argument(
-        "--all-folds",
+        "--no-resume",
         action="store_true",
-        help="Sequentially train all 5 GroupKFold patient-level folds",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume training from an existing checkpoint",
+        help="Disable automatic checkpoint resuming and start training from scratch",
     )
     parser.add_argument(
         "--debug-checkpoint-test",
         action="store_true",
-        help="Run tiny Kaggle verification mode (save, reload, resume test) and exit",
+        help="Run tiny Kaggle verification mode and exit",
     )
     parser.add_argument(
         "--debug",
@@ -87,34 +83,14 @@ def main():
     if args.debug:
         config.debug = True
 
-    print("=" * 80)
-    print("ISIC 2024 COMPETITION TRAINING PIPELINE")
-    print(f"  Project:         {config.project_name}")
-    print(f"  Backbone:        {config.backbone_name}")
-    print(f"  Image Size:      {config.image_size}x{config.image_size}")
-    print(f"  Batch Size:      {config.batch_size}")
-    print(f"  Epochs:          {config.num_epochs}")
-    print(f"  Learning Rate:   {config.learning_rate}")
-    print(f"  AMP FP16:        {config.use_fp16}")
-    print(f"  EMA Enabled:     {getattr(config, 'use_ema', True)}")
-    print(f"  Resume Training: {args.resume}")
-    print(f"  Debug Mode:      {config.debug_checkpoint_test}")
-    print("=" * 80 + "\n")
-
     if config.debug_checkpoint_test:
         run_debug_checkpoint_test(config)
-    elif args.all_folds:
-        print(f"Executing Full 5-Fold GroupKFold Training Pipeline...")
-        train_full_ensemble(config, resume=args.resume)
     else:
-        target_fold = args.fold
-        if args.resume:
-            target_fold, _ = resolve_resume_fold(config, requested_fold=args.fold, resume=True)
-            if target_fold >= config.n_splits:
-                print(f"[RESUME] All {config.n_splits} folds are already completed. Exiting cleanly.", flush=True)
-                sys.exit(0)
-        print(f"Executing Single-Fold Training Pipeline for Fold {target_fold}...")
-        train(config, fold_idx=target_fold, resume=args.resume)
+        run_full_competition_pipeline(
+            config=config,
+            requested_fold=args.fold,
+            resume=not args.no_resume,
+        )
 
 
 if __name__ == "__main__":
