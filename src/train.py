@@ -152,6 +152,7 @@ from src.utils import ensure_dir, get_device, save_checkpoint, load_checkpoint, 
 from src.validate import validate as run_validation
 from src.training.ema import ModelEMA
 from src.training.state import TrainingState
+from src.training.hf_backup import HuggingFaceBackup
 from src.training.hardware import setup_accelerated_model, ThroughputLogger, get_hardware_info
 from src.evaluation.logging_artifacts import generate_evaluation_artifacts
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
@@ -673,11 +674,15 @@ def train(
     resume: bool = False,
     limit_train: int | None = None,
     limit_val: int | None = None,
+    hf_backup: HuggingFaceBackup | None = None,
 ):
     """Full Competition Training pipeline supporting Mixed Precision, EMA, GroupKFold, and Checkpoint Resuming."""
     pipeline_start_time = time.time()
     config = config or Config()
     seed_everything(config.seed)
+
+    if hf_backup is None and getattr(config, "hf_enabled", True):
+        hf_backup = HuggingFaceBackup(repo_id=config.hf_repo_id)
 
     # 8. Startup Report
     print_startup_report(config, fold_idx, resume)
@@ -1089,7 +1094,14 @@ def train(
                 sync_file(best_root_ckpt_path)
             training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
             print(f"[7/8] Saving best checkpoint | New Best pAUC={best_pauc:.4f}", flush=True)
-            training_state.update_epoch(fold=fold_idx, epoch=epoch, best_pauc=best_pauc)
+
+            if hf_backup and hf_backup.is_available:
+                print(f"[7/8] Triggering Hugging Face backup for new best model: {best_checkpoint_path.name}...", flush=True)
+                hf_backup.upload_checkpoint_async(
+                    local_path=best_checkpoint_path,
+                    fold_idx=fold_idx,
+                    model_name=config.backbone_name,
+                )
         else:
             print("[7/8] Saving best checkpoint (no score improvement)", flush=True)
 

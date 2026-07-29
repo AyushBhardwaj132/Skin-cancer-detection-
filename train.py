@@ -63,6 +63,11 @@ def main():
         default=None,
         help="Override learning rate",
     )
+    parser.add_argument(
+        "--hf-test",
+        action="store_true",
+        help="Run Hugging Face authentication & upload self-test and exit",
+    )
 
     args = parser.parse_args()
 
@@ -83,7 +88,12 @@ def main():
     if args.debug:
         config.debug = True
 
-    if config.debug_checkpoint_test:
+    if args.hf_test:
+        from src.training.hf_backup import HuggingFaceBackup
+        hf = HuggingFaceBackup(repo_id=config.hf_repo_id)
+        success = hf.perform_self_test(test_upload=True)
+        sys.exit(0 if success else 1)
+    elif config.debug_checkpoint_test:
         run_debug_checkpoint_test(config)
     else:
         run_full_competition_pipeline(

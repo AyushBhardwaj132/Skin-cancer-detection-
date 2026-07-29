@@ -49,6 +49,8 @@ def run_full_competition_pipeline(
     configure_hardware_optimizations(config)
 
     hf_backup = HuggingFaceBackup(repo_id=config.hf_repo_id) if getattr(config, "hf_enabled", True) else None
+    if hf_backup and hf_backup.is_available:
+        hf_backup.perform_self_test(test_upload=True)
 
     # Step 1: Pre-cache metadata & patient features to eliminate startup latency
     if config.use_metadata and config.train_metadata_path.exists():
@@ -95,7 +97,7 @@ def run_full_competition_pipeline(
 
         # Execute training for fold
         try:
-            res = train(config, fold_idx=fold, resume=resume)
+            res = train(config, fold_idx=fold, resume=resume, hf_backup=hf_backup)
             best_pauc = res.get("best_val_pauc", 0.0)
             best_ckpt = res.get("best_checkpoint", "")
 

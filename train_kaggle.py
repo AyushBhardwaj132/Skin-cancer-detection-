@@ -72,6 +72,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument("--backbone", type=str, default=None, help="Override model backbone")
+    parser.add_argument("--hf-test", action="store_true", help="Run Hugging Face authentication & upload self-test and exit")
 
     args = parser.parse_args()
 
@@ -97,7 +98,12 @@ def main() -> None:
     setup_kaggle_hardware(config)
     print("=" * 80 + "\n")
 
-    if config.debug_checkpoint_test:
+    if args.hf_test:
+        from src.training.hf_backup import HuggingFaceBackup
+        hf = HuggingFaceBackup(repo_id=config.hf_repo_id)
+        success = hf.perform_self_test(test_upload=True)
+        sys.exit(0 if success else 1)
+    elif config.debug_checkpoint_test:
         run_debug_checkpoint_test(config)
     else:
         requested_fold = args.fold if not args.all_folds else None
