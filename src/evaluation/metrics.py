@@ -43,7 +43,13 @@ def compute_pauc(y_true: np.ndarray, y_pred: np.ndarray, max_fpr: float = 0.1) -
 
             min_tpr = 0.8
             tpr_sub = np.maximum(tpr_sub - min_tpr, 0)
-            pauc = np.trapz(tpr_sub, fpr_sub)
+            trapz_fn = getattr(np, "trapezoid", getattr(np, "trapz", None))
+            if trapz_fn is None:
+                try:
+                    from scipy.integrate import trapezoid as trapz_fn
+                except ImportError:
+                    pass
+            pauc = float(trapz_fn(tpr_sub, fpr_sub)) if trapz_fn is not None else 0.0
             max_possible = (1.0 - min_tpr) * max_fpr
             return float(pauc / max_possible) if max_possible > 0 else 0.0
         else:
