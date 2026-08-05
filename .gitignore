@@ -21,6 +21,7 @@ cache/
 
 # Outputs, Logs & Model Checkpoints
 outputs/
+outputs_smoke_test/
 checkpoints/
 logs/
 outputs/checkpoints/
