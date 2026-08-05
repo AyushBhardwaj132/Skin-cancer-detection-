@@ -144,9 +144,11 @@ def save_resume_info(
     global_step: int,
     checkpoint_name: str,
 ) -> Path:
-    """Saves lightweight resume_info.json after every checkpoint for instant, unambiguous startup lookup."""
+    """Saves lightweight fold-aware resume_info_fold{fold}.json and resume_info.json after every checkpoint."""
     output_path = Path(output_dir).resolve()
     output_path.mkdir(parents=True, exist_ok=True)
+    
+    info_fold_path = output_path / f"resume_info_fold{fold}.json"
     info_path = output_path / "resume_info.json"
 
     data = {
@@ -159,6 +161,18 @@ def save_resume_info(
         "git_commit": get_git_commit(),
     }
 
+    # Write fold-specific resume info
+    tmp_fold_path = info_fold_path.with_suffix(".tmp")
+    try:
+        with open(tmp_fold_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp_fold_path.replace(info_fold_path)
+    except Exception as e:
+        print(f"[WARN] Failed to write {info_fold_path.name}: {e}")
+
+    # Write global resume info
     tmp_path = info_path.with_suffix(".tmp")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -169,16 +183,37 @@ def save_resume_info(
     except Exception as e:
         print(f"[WARN] Failed to write resume_info.json: {e}")
 
-    return info_path
+    return info_fold_path
 
 
-def load_resume_info(output_dir: str | Path) -> dict | None:
-    """Loads lightweight resume_info.json if present."""
-    info_path = Path(output_dir) / "resume_info.json"
+def load_resume_info(output_dir: str | Path, fold: int | None = None) -> dict | None:
+    """Loads lightweight resume info if present.
+    If fold is provided, tries to load fold-specific resume_info_fold{fold}.json first.
+    If only global resume_info.json exists, verifies its fold matches requested fold.
+    """
+    output_path = Path(output_dir)
+
+    if fold is not None:
+        info_fold_path = output_path / f"resume_info_fold{fold}.json"
+        if info_fold_path.exists():
+            try:
+                with open(info_fold_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("fold") == fold:
+                    return data
+            except Exception:
+                pass
+
+    info_path = output_path / "resume_info.json"
     if not info_path.exists():
         return None
     try:
         with open(info_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        if fold is not None:
+            if data.get("fold") != fold:
+                return None
+        return data
     except Exception:
         return None
+

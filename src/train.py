@@ -201,14 +201,12 @@ def _build_loaders_fold(
         full_df = MetadataCacheManager.load_or_compute_enriched_metadata(
             config.train_metadata_path, config, verbose=True
         )
-        # Slice fold dataframes from enriched dataframe
+        # Slice fold dataframes cleanly directly from enriched full_df
         train_df, val_df = get_fold_dataframes(
-            config.train_metadata_path,
+            full_df,
             fold_idx=fold_idx,
             n_splits=config.n_splits,
         )
-        train_df = full_df.iloc[train_df.index].reset_index(drop=True)
-        val_df = full_df.iloc[val_df.index].reset_index(drop=True)
 
         if limit_train is not None and limit_train > 0:
             train_df = train_df.iloc[:limit_train].reset_index(drop=True)
@@ -712,6 +710,14 @@ def train(
     if hf_backup is None and getattr(config, "hf_enabled", True):
         hf_backup = HuggingFaceBackup(repo_id=config.hf_repo_id)
 
+    if resume and hf_backup and hf_backup.is_available:
+        print("[HF RECOVERY] Checking Hugging Face for remote checkpoints and state...", flush=True)
+        hf_backup.download_recovery_state(
+            output_dir=config.output_dir,
+            model_name=config.backbone_name if config.use_metadata else config.model_name,
+            n_splits=config.n_splits,
+        )
+
     # 8. Startup Report
     print_startup_report(config, fold_idx, resume)
 
@@ -743,23 +749,36 @@ def train(
     # --- Load Training State ---
     training_state = TrainingState.load(config.output_dir)
 
-    # 4. Verify Resume
+    # --- Safe variable defaults for all fold runs ---
+    start_epoch = 1
+    start_batch_idx = 0
+    global_step = 0
+    best_pauc = float("-inf")
+    best_auc = float("-inf")
+    history: list[dict] = []
+    target_resume_path = None
+
+    # Verify Resume
     if resume:
-        target_resume_path = None
         current_model_name = config.backbone_name if config.use_metadata else config.model_name
         clean_current = current_model_name.replace("tf_", "").replace("-", "_")
 
-        resume_info = load_resume_info(config.output_dir)
+        resume_info = load_resume_info(config.output_dir, fold=fold_idx)
         if resume_info:
-            print(f"[RESUME INFO LOG] Fast lookup from resume_info.json:")
+            print(f"[RESUME INFO LOG] Fast lookup from resume_info for fold {fold_idx}:")
             print(f"  Fold: {resume_info.get('fold')}, Epoch: {resume_info.get('epoch')}, Batch: {resume_info.get('batch')}, Checkpoint: {resume_info.get('checkpoint')}")
             info_ckpt_name = resume_info.get("checkpoint")
             if info_ckpt_name:
                 for search_dir in [bb_dir, config.checkpoint_dir]:
                     candidate = search_dir / info_ckpt_name
                     if candidate.exists() and candidate.stat().st_size > 0:
-                        target_resume_path = candidate
-                        break
+                        try:
+                            chk_meta = load_checkpoint(candidate, map_location="cpu")
+                            if chk_meta.get("fold", fold_idx) == fold_idx:
+                                target_resume_path = candidate
+                                break
+                        except Exception:
+                            continue
 
         if not target_resume_path:
             for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
@@ -767,15 +786,16 @@ def train(
                     try:
                         chk_meta = load_checkpoint(candidate, map_location="cpu")
                         chk_model = chk_meta.get("model_name", "")
+                        chk_fold = chk_meta.get("fold", fold_idx)
                         clean_chk = chk_model.replace("tf_", "").replace("-", "_") if chk_model else ""
-                        if not chk_model or clean_chk == clean_current:
+                        if chk_fold == fold_idx and (not chk_model or clean_chk == clean_current):
                             target_resume_path = candidate
                             break
                     except Exception:
                         continue
 
         if not target_resume_path or not target_resume_path.exists():
-            print(f"[RESUME] No checkpoint found under {config.checkpoint_dir}. Starting fresh training.", flush=True)
+            print(f"[RESUME] No valid checkpoint found for Fold {fold_idx} under {config.checkpoint_dir}. Starting fresh training.", flush=True)
             resume = False
         else:
             ckpt_size_mb = target_resume_path.stat().st_size / (1024 * 1024)
@@ -882,61 +902,48 @@ def train(
     scaler = torch.amp.GradScaler("cuda") if (config.use_fp16 and device.type == "cuda") else None
     early_stopping = EarlyStopping(patience=config.early_stopping_patience, min_delta=1e-4)
 
-    start_epoch = 1
-    best_pauc = float("-inf")
-    best_auc = float("-inf")
-    history: list[dict] = []
-
     # --- Resume Training Support ---
-    if resume:
-        target_resume_path = None
-        for candidate in [last_checkpoint_path, last_root_ckpt_path, best_checkpoint_path, best_root_ckpt_path]:
-            if candidate.exists():
-                target_resume_path = candidate
-                break
+    if resume and target_resume_path and target_resume_path.exists():
+        print(f"Resuming training from checkpoint: {target_resume_path}")
+        ckpt = load_checkpoint(target_resume_path, map_location=device)
+        raw_model.load_state_dict(ckpt["model_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if "scaler_state_dict" in ckpt and scaler is not None and ckpt.get("scaler_state_dict") is not None:
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
+        if "ema_state_dict" in ckpt and ema is not None and ckpt.get("ema_state_dict") is not None:
+            ema.module.load_state_dict(ckpt["ema_state_dict"])
 
-        if target_resume_path and target_resume_path.exists():
-            print(f"Resuming training from checkpoint: {target_resume_path}")
-            ckpt = load_checkpoint(target_resume_path, map_location=device)
-            raw_model.load_state_dict(ckpt["model_state_dict"])
-            if "optimizer_state_dict" in ckpt:
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            if "scheduler_state_dict" in ckpt:
-                scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-            if "scaler_state_dict" in ckpt and scaler is not None and ckpt.get("scaler_state_dict") is not None:
-                scaler.load_state_dict(ckpt["scaler_state_dict"])
-            if "ema_state_dict" in ckpt and ema is not None and ckpt.get("ema_state_dict") is not None:
-                ema.module.load_state_dict(ckpt["ema_state_dict"])
-            
+        saved_epoch = ckpt.get("epoch", 0)
+        saved_batch = ckpt.get("batch_idx", 0)
+        total_b = ckpt.get("total_batches", 0)
+
+        if saved_batch > 0 and (total_b == 0 or saved_batch < total_b):
+            start_epoch = saved_epoch
+            start_batch_idx = saved_batch
+        else:
+            start_epoch = saved_epoch + 1
             start_batch_idx = 0
-            saved_epoch = ckpt.get("epoch", 0)
-            saved_batch = ckpt.get("batch_idx", 0)
-            total_b = ckpt.get("total_batches", 0)
 
-            if saved_batch > 0 and (total_b == 0 or saved_batch < total_b):
-                start_epoch = saved_epoch
-                start_batch_idx = saved_batch
-            else:
-                start_epoch = saved_epoch + 1
-                start_batch_idx = 0
+        best_pauc = ckpt.get("best_val_pauc", ckpt.get("val_pauc", float("-inf")))
+        best_auc = ckpt.get("best_val_auc", ckpt.get("val_auc", float("-inf")))
 
-            best_pauc = ckpt.get("best_val_pauc", ckpt.get("val_pauc", float("-inf")))
-            best_auc = ckpt.get("best_val_auc", ckpt.get("val_auc", float("-inf")))
+        # Restore RNG state if present
+        if "rng_state" in ckpt and ckpt["rng_state"]:
+            rng = ckpt["rng_state"]
+            if "torch" in rng and rng["torch"] is not None:
+                torch.set_rng_state(rng["torch"])
+            if "cuda" in rng and rng["cuda"] is not None and torch.cuda.is_available():
+                try:
+                    torch.cuda.set_rng_state_all(rng["cuda"])
+                except Exception:
+                    pass
+            if "numpy" in rng and rng["numpy"] is not None:
+                np.random.set_state(rng["numpy"])
 
-            # Restore RNG state if present
-            if "rng_state" in ckpt and ckpt["rng_state"]:
-                rng = ckpt["rng_state"]
-                if "torch" in rng and rng["torch"] is not None:
-                    torch.set_rng_state(rng["torch"])
-                if "cuda" in rng and rng["cuda"] is not None and torch.cuda.is_available():
-                    try:
-                        torch.cuda.set_rng_state_all(rng["cuda"])
-                    except Exception:
-                        pass
-                if "numpy" in rng and rng["numpy"] is not None:
-                    np.random.set_state(rng["numpy"])
-
-            print(f"  Resumed at epoch {start_epoch}, batch {start_batch_idx} (Previous Best pAUC={best_pauc:.4f})")
+        print(f"  Resumed at epoch {start_epoch}, batch {start_batch_idx} (Previous Best pAUC={best_pauc:.4f})")
 
     print(f"\nTraining fold {fold_idx} for epochs {start_epoch} to {config.num_epochs}...")
     print(f"  AMP FP16={config.use_fp16}, EMA={getattr(config, 'use_ema', True)}, MixUp={config.use_mixup}, CutMix={config.use_cutmix}")

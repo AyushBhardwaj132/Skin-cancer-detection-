@@ -256,3 +256,151 @@ class HuggingFaceBackup:
 
         print(f"[HF BACKUP FAILED] All {self.max_retries} upload attempts failed for {local_path.name}. Continuing training.", flush=True)
         return False
+
+    def download_recovery_state(
+        self,
+        output_dir: str | Path,
+        model_name: str = "efficientnetv2_s",
+        n_splits: int = 5,
+    ) -> bool:
+        """Downloads training state, checkpoints, and diagnostic reports from Hugging Face.
+        Verifies checkpoint PyTorch integrity and audits diagnostic patient isolation before accepting a fold as completed.
+        """
+        output_dir = Path(output_dir)
+        checkpoints_dir = output_dir / "checkpoints"
+        eval_dir = output_dir / "evaluation"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        eval_dir.mkdir(parents=True, exist_ok=True)
+
+        if not self.is_available or self._api is None:
+            print("[HF RECOVERY] Hugging Face client not authenticated. Recovery skipped.", flush=True)
+            return False
+
+        print(f"\n{'='*60}", flush=True)
+        print("HUGGING FACE STATE & CHECKPOINT RECOVERY", flush=True)
+        print(f"{'='*60}", flush=True)
+        print(f"Target Repository: {self.repo_id}", flush=True)
+
+        try:
+            repo_files = set(self._api.list_repo_files(repo_id=self.repo_id))
+            print(f"[HF RECOVERY] Found {len(repo_files)} files in repository.", flush=True)
+        except Exception as e:
+            print(f"[HF RECOVERY WARN] Failed to list repo files: {e}", flush=True)
+            return False
+
+        clean_model = model_name.replace("tf_", "").replace("-", "_")
+
+        # 1. Try downloading training_state.json
+        state_downloaded = False
+        for candidate_hf in ["meta/training_state.json", "training_state.json"]:
+            if candidate_hf in repo_files:
+                try:
+                    dl_path = self._api.hf_hub_download(
+                        repo_id=self.repo_id,
+                        filename=candidate_hf,
+                        local_dir=str(output_dir),
+                    )
+                    # Copy to exact output_dir location if nested
+                    target = output_dir / "training_state.json"
+                    if Path(dl_path).resolve() != target.resolve():
+                        import shutil
+                        shutil.copy2(dl_path, target)
+                    state_downloaded = True
+                    print(f"[HF RECOVERY] Downloaded training_state.json [OK]", flush=True)
+                    break
+                except Exception as e:
+                    print(f"[HF RECOVERY WARN] Failed to download {candidate_hf}: {e}", flush=True)
+
+        import json
+        import torch
+
+        # Load or create training state
+        from src.training.state import TrainingState
+        training_state = TrainingState.load(output_dir)
+
+        # 2. Iterate folds and download checkpoints & diagnostic reports
+        for fold in range(n_splits):
+            fold_ckpt_dir = checkpoints_dir / clean_model / f"fold_{fold}"
+            fold_ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+            # Checkpoint candidates
+            for ckpt_name in [f"best_model_fold{fold}.pt", f"last_checkpoint_fold{fold}.pt"]:
+                hf_candidates = [
+                    f"{clean_model}/fold_{fold}/{ckpt_name}",
+                    f"fold_{fold}/{ckpt_name}",
+                    ckpt_name,
+                ]
+                for hf_file in hf_candidates:
+                    if hf_file in repo_files:
+                        target_local = fold_ckpt_dir / ckpt_name
+                        root_local = checkpoints_dir / ckpt_name
+                        if not target_local.exists() or target_local.stat().st_size == 0:
+                            try:
+                                dl_file = self._api.hf_hub_download(
+                                    repo_id=self.repo_id,
+                                    filename=hf_file,
+                                    local_dir=str(output_dir),
+                                )
+                                print(f"[HF RECOVERY] Downloaded {ckpt_name} for Fold {fold} [OK]", flush=True)
+                                # Copy to expected checkpoint dirs
+                                import shutil
+                                if Path(dl_file).resolve() != target_local.resolve():
+                                    shutil.copy2(dl_file, target_local)
+                                if Path(dl_file).resolve() != root_local.resolve():
+                                    shutil.copy2(dl_file, root_local)
+                            except Exception as e:
+                                print(f"[HF RECOVERY WARN] Failed to download {hf_file}: {e}", flush=True)
+
+                        # Verify PyTorch checkpoint integrity
+                        if target_local.exists():
+                            try:
+                                loaded = torch.load(target_local, map_location="cpu", weights_only=False)
+                                print(f"  - Checkpoint integrity verified for {ckpt_name} (Epoch {loaded.get('epoch')})", flush=True)
+                            except Exception as e:
+                                print(f"[HF RECOVERY ERROR] Checkpoint {ckpt_name} corrupted: {e}", flush=True)
+
+            # Diagnostic report download & patient leakage audit
+            diag_name = f"fold_{fold}_diagnostic.json"
+            diag_hf_candidates = [
+                f"evaluation/fold_{fold}/{diag_name}",
+                f"evaluation/{diag_name}",
+                diag_name,
+            ]
+            for diag_hf in diag_hf_candidates:
+                if diag_hf in repo_files:
+                    try:
+                        dl_diag = self._api.hf_hub_download(
+                            repo_id=self.repo_id,
+                            filename=diag_hf,
+                            local_dir=str(output_dir),
+                        )
+                        target_diag = eval_dir / diag_name
+                        import shutil
+                        if Path(dl_diag).resolve() != target_diag.resolve():
+                            shutil.copy2(dl_diag, target_diag)
+
+                        # Audit patient isolation in diagnostic
+                        with open(target_diag, "r", encoding="utf-8") as f:
+                            diag_data = json.load(f)
+
+                        leak_audit = diag_data.get("data_leakage_audit", {})
+                        passed = leak_audit.get("patient_isolation_passed", False)
+                        overlap_c = leak_audit.get("overlap_patient_count", 999)
+
+                        if not passed or overlap_c > 0:
+                            print(f"[HF RECOVERY AUDIT WARNING] Fold {fold} HF diagnostic reported PATIENT LEAKAGE! (overlap={overlap_c})", flush=True)
+                            print(f"  -> Fold {fold} CANNOT BE SKIPPED and MUST BE RETRAINED!", flush=True)
+                            if fold in training_state.completed_folds:
+                                training_state.completed_folds.remove(fold)
+                        else:
+                            print(f"[HF RECOVERY AUDIT] Fold {fold} diagnostic verified: Zero Patient Leakage [OK]", flush=True)
+
+                    except Exception as e:
+                        print(f"[HF RECOVERY WARN] Diagnostic check failed for fold {fold}: {e}", flush=True)
+
+        training_state.save(output_dir)
+        print(f"[HF RECOVERY] State recovery complete. Active completed folds: {training_state.completed_folds}", flush=True)
+        print(f"{'='*60}\n", flush=True)
+        return True
+
